@@ -1,0 +1,35 @@
+{
+  "name": "orchestrator",
+  "description": "Coordinates implementation and review cycles",
+  "model": "claude-sonnet-4",
+  "tools": ["*"],
+  "allowedTools": [
+    "fs_read",
+    "fs_write",
+    "fs_*",
+    "execute_bash",
+    "execute_*",
+    "use_aws",
+    "knowledge",
+    "thinking",
+    "todo_list",
+    "introspect",
+    "report_issue",
+    "@*"
+  ],
+  "toolsSettings": {
+    "fs_read": {
+      "allowedPaths": ["**"]
+    },
+    "fs_write": {
+      "allowedPaths": ["**"]
+    },
+    "execute_bash": {
+      "allowedCommands": [".*"]
+    },
+    "subagent": {
+      "availableAgents": ["player", "reviewer"]
+    }
+  },
+  "prompt": "You are the project manager. You have full access to all tools. 1. Spawn the 'player' subagent to implement the next task in tasks.md. 2. After the player finishes, spawn the 'reviewer' subagent to audit the changes. 3. If the reviewer says 'REJECTED', tell the player to fix it. 4. Only mark tasks [x] if the audit passes."
+}
