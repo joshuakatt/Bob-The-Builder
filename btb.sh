@@ -156,13 +156,26 @@ spawn_worker() {
 
     # If worktree creation failed (index lock, etc.), defer the task
     if [ -z "$worktree_path" ] || [ ! -d "$worktree_path" ]; then
-        dbg "worktree creation failed for task ${task_id} — deferring"
+        dbg "worktree creation failed for task ${task_id} — deferring (worktree_path='${worktree_path}')"
+        dbg "  git status: $(git status --porcelain 2>/dev/null | head -3 | tr '\n' ' ')"
+        dbg "  git branch: $(git branch --show-current 2>/dev/null || echo '?')"
+        dbg "  index.lock exists: $([ -f .git/index.lock ] && echo 'YES' || echo 'no')"
         tui_event "⚠ worktree creation failed for ${task_id}, will retry next cycle"
         set_task_state "$task_id" "pending"
         return 1
     fi
 
     set_task_wt "$task_id" "$worktree_path"
+
+    # Copy .kiro/ artifacts into the worktree — these may not be committed
+    # to git yet, so git worktree add won't include them. Without this,
+    # kiro-cli inside the worktree can't find agent definitions or steering docs.
+    for _kiro_sub in agents steering settings; do
+        if [ -d ".kiro/${_kiro_sub}" ]; then
+            mkdir -p "${worktree_path}/.kiro/${_kiro_sub}"
+            cp -a ".kiro/${_kiro_sub}/." "${worktree_path}/.kiro/${_kiro_sub}/" 2>/dev/null || true
+        fi
+    done
 
     local task_log
     task_log="$(pwd)/${LOG_DIR}/task_${task_id//\./_}_${TIMESTAMP}.log"
@@ -444,13 +457,14 @@ are_deps_satisfied() {
             synced) ;; # good
             failed|skipped)
                 # Dependency failed — this task can never run
+                dbg "are_deps_satisfied: task=${task_id} blocked by dep=${dep} state=${dep_state}"
                 return 2
                 ;;
             unknown)
                 # Dependency not in DAG (planner error) — treat as satisfied
                 # to avoid permanent deadlock. The task will handle missing
                 # artifacts on its own.
-                dbg "WARNING: dep ${dep} for task ${task_id} not in DAG, ignoring"
+                dbg "WARNING: dep ${dep} for task ${task_id} not in DAG (state=unknown), ignoring"
                 ;;
             *)
                 # Dependency not yet synced
@@ -465,10 +479,13 @@ are_deps_satisfied() {
 # Sets _READY_TASKS (space-separated) instead of echoing, to avoid subshell.
 compute_ready_tasks() {
     _READY_TASKS=""
+    local _pending_count=0
+    local _skip_count=0
     for task_id in $ALL_TASKS; do
         local state
         state=$(get_task_state "$task_id")
         [ "$state" != "pending" ] && continue
+        _pending_count=$((_pending_count + 1))
 
         local dep_result=0
         are_deps_satisfied "$task_id" || dep_result=$?
@@ -480,9 +497,17 @@ compute_ready_tasks() {
             tui_set_task_state "$task_id" "failed"
             tui_event "⊘ task ${task_id} skipped (dependency failed)"
             TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+            _skip_count=$((_skip_count + 1))
+            dbg "compute_ready: task ${task_id} SKIPPED (dep failed)"
+        else
+            : # task not ready yet — silent (deps unsatisfied)
         fi
     done
     _READY_TASKS=$(echo "$_READY_TASKS" | xargs)
+    # Only log when there's something interesting (ready tasks or skips)
+    if [ -n "$_READY_TASKS" ] || [ "$_skip_count" -gt 0 ]; then
+        dbg "compute_ready: pending=${_pending_count} ready='${_READY_TASKS}' newly_skipped=${_skip_count}"
+    fi
 }
 
 # ─── Helper: sync a completed task immediately ───────────────
@@ -679,11 +704,11 @@ while true; do
     poll_and_sync
     _SYNCED_SINCE_REVIEW=$((_SYNCED_SINCE_REVIEW + _POLL_SYNCED_COUNT))
 
-    # 2. Update TUI
+    # 2. Update TUI (never let TUI errors kill the scheduler)
     TUI_CURRENT_WAVE=$_HIGHEST_SYNCED_WAVE
     TUI_ELAPSED=$(($(date +%s) - START_TIME))
-    tui_update_counts
-    tui_render
+    tui_update_counts || true
+    tui_render || true
 
     # 3. Check if we're done
     local_remaining=0
@@ -705,15 +730,23 @@ while true; do
 
     # 4. Find ready tasks and spawn workers for them
     compute_ready_tasks
+    # Only log step4 when there's something to spawn
+    if [ -n "$_READY_TASKS" ]; then
+        dbg "step4: _READY_TASKS='${_READY_TASKS}' running=$(count_running) WORKER_SLOTS=${WORKER_SLOTS}"
+    fi
     for task_id in $_READY_TASKS; do
         # Respect WORKER_SLOTS (MAX_PARALLEL minus reserved review slots)
         running_count=$(count_running)
         if [ "$running_count" -ge "$WORKER_SLOTS" ]; then
+            dbg "step4: at capacity (${running_count}/${WORKER_SLOTS}), deferring remaining"
             break
         fi
 
         dbg "spawning ready task ${task_id}"
-        spawn_worker "$task_id" || true
+        spawn_worker "$task_id" || {
+            dbg "step4: spawn_worker FAILED for ${task_id}, state now=$(get_task_state "$task_id")"
+            true
+        }
         sleep "$RATE_LIMIT_PAUSE"
     done
 
@@ -732,8 +765,8 @@ while true; do
                 poll_and_sync
                 _SYNCED_SINCE_REVIEW=$((_SYNCED_SINCE_REVIEW + _POLL_SYNCED_COUNT))
                 TUI_ELAPSED=$(($(date +%s) - START_TIME))
-                tui_update_counts
-                tui_render
+                tui_update_counts || true
+                tui_render || true
                 sleep 1
             done
             running_count=0
@@ -757,7 +790,9 @@ while true; do
 
             # Build task list for review from recently synced
             review_result=0
+            dbg "review_wave START batch tasks='${_REVIEW_BATCH_TASKS}' base_sha='${_REVIEW_BATCH_BASE_SHA}'"
             review_wave "batch" "$_REVIEW_BATCH_TASKS" "$_REVIEW_BATCH_BASE_SHA" || review_result=$?
+            dbg "review_wave END result=${review_result}"
 
             kill $_REVIEW_POLL_PID 2>/dev/null || true
             wait $_REVIEW_POLL_PID 2>/dev/null || true
@@ -769,11 +804,17 @@ while true; do
                 tui_event "⚠ review gate flagged issues — check logs"
             fi
 
+            # Snapshot git & task state after review for debugging
+            dbg "post-review git HEAD=$(git rev-parse --short HEAD 2>/dev/null || echo '?') branch=$(git branch --show-current 2>/dev/null || echo '?')"
+            dbg "post-review git dirty=$(git status --porcelain 2>/dev/null | head -5 | tr '\n' ' ')"
+            dbg "post-review TOTAL_COMPLETED=${TOTAL_COMPLETED} TOTAL_FAILED=${TOTAL_FAILED} TOTAL_SKIPPED=${TOTAL_SKIPPED}"
+
             _SYNCED_SINCE_REVIEW=0
             _REVIEW_BATCH_TASKS=""
             _REVIEW_BATCH_BASE_SHA=""
             _REVIEW_DEFERRALS=0
             TUI_PHASE="executing"
+            dbg "review cleanup done, resuming scheduler"
         else
             # Workers still running and not yet forced — defer review
             _REVIEW_DEFERRALS=$((_REVIEW_DEFERRALS + 1))
@@ -798,6 +839,15 @@ while true; do
     if [ "$local_has_running_now" = false ] && [ -z "$_READY_TASKS" ] && [ "$local_remaining_now" -gt 0 ]; then
         # Deadlock: tasks remain but none are ready and none are running
         # This means all remaining tasks have unsatisfied deps that will never resolve
+        dbg "DEADLOCK: remaining=${local_remaining_now} running=false ready='${_READY_TASKS}'"
+        # Dump every task's state and deps for post-mortem
+        for task_id in $ALL_TASKS; do
+            local _ds _dd
+            _ds=$(get_task_state "$task_id")
+            _dd=$(cat "${STATE_DIR}/${task_id}.deps" 2>/dev/null || echo "none")
+            [ "$_ds" = "synced" ] || [ "$_ds" = "failed" ] || [ "$_ds" = "skipped" ] || \
+                dbg "  DEADLOCK task=${task_id} state=${_ds} deps=[${_dd}]"
+        done
         tui_event "⚠ deadlock detected — ${local_remaining_now} tasks blocked by failed dependencies"
         for task_id in $ALL_TASKS; do
             state=""
@@ -814,7 +864,7 @@ while true; do
     # 7. Input polling — keep TUI responsive
     for ((poll=0; poll<5; poll++)); do
         tui_handle_input || true
-        tui_render
+        tui_render || true
         sleep 0.2
     done
 done
@@ -852,13 +902,16 @@ TUI_ELAPSED=$(($(date +%s) - START_TIME))
 TUI_REVIEW_PASSES=$TOTAL_REVIEW_PASSES
 TUI_REVIEW_FIXES=$TOTAL_REVIEW_FIXES
 TUI_SKIPPED=$TOTAL_SKIPPED
-tui_update_counts
+tui_update_counts || true
 
 TOTAL=$(count_total_tasks "$TASK_FILE")
 INCOMPLETE_FINAL=$(count_incomplete_tasks "$TASK_FILE")
 
+dbg "FINAL: total=${TOTAL} incomplete=${INCOMPLETE_FINAL} completed=${TOTAL_COMPLETED} failed=${TOTAL_FAILED} skipped=${TOTAL_SKIPPED}"
+
 if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_SKIPPED" -gt 0 ]; then
     tui_event "⚠ ${TOTAL_FAILED} failed, ${TOTAL_SKIPPED} skipped"
+    dbg "EXIT 1: failed=${TOTAL_FAILED} skipped=${TOTAL_SKIPPED}"
     sleep 2
     exit 1
 elif [ "$INCOMPLETE_FINAL" -eq 0 ]; then

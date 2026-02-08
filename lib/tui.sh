@@ -10,6 +10,34 @@
 #   - Progress bar
 #
 # Uses alternate screen buffer so the user's terminal is clean on exit.
+#
+# SAFETY: The TUI is purely cosmetic — it must NEVER crash the orchestrator.
+# All public TUI functions use set +eu internally to catch any error
+# (including unbound variables, arithmetic failures, printf errors, etc.)
+# and silently continue. The orchestrator's execution logic is completely
+# isolated from TUI failures. Additionally, btb.sh guards TUI calls with
+# || true as a belt-and-suspenders measure.
+
+# ─── Fault Isolation Wrapper ─────────────────────────────────
+# Runs a function body with set +eu (disable exit-on-error and unbound-var
+# checks) so that TUI bugs cannot kill the orchestrator. Errors are logged
+# to the debug log if available, but never propagated.
+#
+# We can't use a subshell because TUI functions modify global arrays.
+# Instead, we save/restore shell options around the call.
+_tui_safe() {
+    local fn="$1"; shift
+    local _prev_opts
+    _prev_opts=$(set +o)  # capture current options
+    set +eu                # disable strict mode for TUI
+    "$fn" "$@" 2>/dev/null
+    local _rc=$?
+    eval "$_prev_opts"     # restore original options
+    if [ "$_rc" -ne 0 ] && declare -F dbg &>/dev/null; then
+        dbg "TUI: ${fn} returned ${_rc} (suppressed)" 2>/dev/null || true
+    fi
+    return 0               # NEVER propagate TUI errors
+}
 
 # ─── Terminal Control ────────────────────────────────────────
 TUI_ACTIVE=false
@@ -35,19 +63,23 @@ _REVERSE='\033[7m'
 # ─── Screen Management ───────────────────────────────────────
 
 tui_init() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     TUI_ACTIVE=true
     printf '\033[?1049h\033[?25l'
     tui_update_size
     tui_enable_raw_input
-    trap 'tui_update_size; tui_render' WINCH
+    trap 'tui_update_size 2>/dev/null || true; tui_render 2>/dev/null || true' WINCH
+    eval "$_prev_opts" 2>/dev/null
 }
 
 tui_cleanup() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     if [ "$TUI_ACTIVE" = true ]; then
         TUI_ACTIVE=false
         tui_restore_input
         printf '\033[?25h\033[?1049l'
     fi
+    eval "$_prev_opts" 2>/dev/null
 }
 
 tui_update_size() {
@@ -95,6 +127,7 @@ tui_hr() {
 # ─── Activity Log (Ring Buffer) ──────────────────────────────
 
 tui_log() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     local ts
     ts=$(date +%H:%M:%S)
     TUI_LOG_LINES+=("${ts} $1")
@@ -102,6 +135,7 @@ tui_log() {
     if [ "$count" -gt "$TUI_MAX_LOG" ]; then
         TUI_LOG_LINES=("${TUI_LOG_LINES[@]:$((count - TUI_MAX_LOG))}")
     fi
+    eval "$_prev_opts" 2>/dev/null
 }
 
 # ─── State Arrays ────────────────────────────────────────────
@@ -199,6 +233,7 @@ tui_auto_select() {
 # macOS bash 3.2 doesn't support fractional `read -t` timeouts.
 
 tui_handle_input() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     # Use perl for non-blocking read — macOS bash 3.2 doesn't support
     # fractional seconds in `read -t 0.1` and escape sequences get mangled.
     local input=""
@@ -212,13 +247,14 @@ tui_handle_input() {
             print $buf;
         }
         close($tty);
-    ' 2>/dev/null) || return 1
-    [ -z "$input" ] && return 1
+    ' 2>/dev/null) || { eval "$_prev_opts" 2>/dev/null; return 1; }
+    [ -z "$input" ] && { eval "$_prev_opts" 2>/dev/null; return 1; }
 
     case "$input" in
-        $'\033[A'*) tui_select_prev; return 0 ;;
-        $'\033[B'*) tui_select_next; return 0 ;;
+        $'\033[A'*) tui_select_prev; eval "$_prev_opts" 2>/dev/null; return 0 ;;
+        $'\033[B'*) tui_select_next; eval "$_prev_opts" 2>/dev/null; return 0 ;;
     esac
+    eval "$_prev_opts" 2>/dev/null
     return 1
 }
 
@@ -241,13 +277,15 @@ tui_restore_input() {
 # ─── Set log file path for a task ────────────────────────────
 
 tui_set_task_log() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     local tid="$1" logpath="$2"
     for ((i=0; i<${#TUI_TASK_IDS[@]}; i++)); do
         if [ "${TUI_TASK_IDS[$i]}" = "$tid" ]; then
             TUI_TASK_LOGS[$i]="$logpath"
-            return
+            eval "$_prev_opts" 2>/dev/null; return
         fi
     done
+    eval "$_prev_opts" 2>/dev/null
 }
 
 # Get log file for a task
@@ -909,12 +947,18 @@ tui_render_log() {
 
 tui_render() {
     [ "$TUI_ACTIVE" != true ] && return
+    local _prev_opts; _prev_opts=$(set +o); set +eu
+
+    # Safety: if a previous render crashed mid-frame, tui_line/tui_hr may
+    # still be the buffer overrides (writing to a dead $_buf). Restore the
+    # real implementations before doing anything else.
+    unset -f tui_line tui_hr 2>/dev/null || true
 
     # Throttle: max 1 render per second to avoid flicker
     local now
     now=$(date +%s)
     if [ $((now - TUI_LAST_RENDER)) -lt 1 ]; then
-        return
+        eval "$_prev_opts" 2>/dev/null; return
     fi
     TUI_LAST_RENDER=$now
 
@@ -1015,11 +1059,13 @@ tui_render() {
 
     # Flush entire frame in one write
     printf '%s' "$_buf"
+    eval "$_prev_opts" 2>/dev/null
 }
 
 # ─── Load DAG ────────────────────────────────────────────────
 
 tui_load_dag() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     local dag_json="$1" task_file="$2"
 
     TUI_WAVE_IDS=(); TUI_WAVE_TASKS=()
@@ -1066,18 +1112,22 @@ print(f'TUI_TOTAL_TASKS={len(task_ids)}')
         fi
         TUI_TASK_LOGS+=("")
     done
+    eval "$_prev_opts" 2>/dev/null
 }
 
 # ─── State Helpers ────────────────────────────────────────────
 
 tui_set_task_state() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     local tid="$1" new_state="$2"
     for ((i=0; i<${#TUI_TASK_IDS[@]}; i++)); do
-        [ "${TUI_TASK_IDS[$i]}" = "$tid" ] && { TUI_TASK_STATES[$i]="$new_state"; return; }
+        [ "${TUI_TASK_IDS[$i]}" = "$tid" ] && { TUI_TASK_STATES[$i]="$new_state"; eval "$_prev_opts" 2>/dev/null; return; }
     done
+    eval "$_prev_opts" 2>/dev/null
 }
 
 tui_update_counts() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     TUI_RUNNING=0; TUI_COMPLETED=0; TUI_FAILED=0
     for ((i=0; i<${#TUI_TASK_STATES[@]}; i++)); do
         case "${TUI_TASK_STATES[$i]}" in
@@ -1086,17 +1136,21 @@ tui_update_counts() {
             failed) TUI_FAILED=$((TUI_FAILED + 1)) ;;
         esac
     done
+    eval "$_prev_opts" 2>/dev/null
 }
 
 tui_event() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     tui_log "$1"
     tui_update_counts
     tui_render
+    eval "$_prev_opts" 2>/dev/null
 }
 
 # ─── Summary ─────────────────────────────────────────────────
 
 tui_print_summary() {
+    local _prev_opts; _prev_opts=$(set +o); set +eu
     local completed="$TUI_COMPLETED" total="$TUI_TOTAL_TASKS" failed="$TUI_FAILED"
     local elapsed_str
     elapsed_str=$(tui_format_time "$TUI_ELAPSED")
@@ -1119,4 +1173,5 @@ tui_print_summary() {
         echo -e "  ${_YELLOW}incomplete${_RST}"
     fi
     echo ""
+    eval "$_prev_opts" 2>/dev/null
 }
