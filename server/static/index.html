@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BTB Dashboard</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --orange: #db6d28;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header .status { font-size: 13px; color: var(--text-muted); }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  .section { margin-bottom: 32px; }
+  .section h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section h2 .count {
+    background: var(--border);
+    color: var(--text);
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+  .empty { color: var(--text-muted); font-style: italic; padding: 16px 0; }
+  .job-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    transition: border-color 0.15s;
+  }
+  .job-card:hover { border-color: var(--accent); }
+  .job-card.clickable { cursor: pointer; }
+  .job-info { flex: 1; min-width: 0; }
+  .job-id { font-family: monospace; font-size: 13px; color: var(--text-muted); }
+  .job-repo { font-weight: 600; font-size: 15px; margin: 2px 0; }
+  .job-meta { font-size: 13px; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 12px; }
+  .job-meta span { display: inline-flex; align-items: center; gap: 4px; }
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
+  .badge-running { background: rgba(56,166,255,0.15); color: var(--accent); }
+  .badge-pending { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .badge-completed { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-failed { background: rgba(248,81,73,0.15); color: var(--red); }
+  .badge-timeout { background: rgba(219,109,40,0.15); color: var(--orange); }
+  .retry-link {
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .retry-link:hover { text-decoration: underline; }
+  .btn {
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--border); }
+  .btn-retry { border-color: var(--accent); color: var(--accent); }
+  .btn-retry:hover { background: rgba(56,166,255,0.15); }
+  .btn-retry:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* TUI Overlay */
+  .tui-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 1000;
+    flex-direction: column;
+  }
+  .tui-overlay.active { display: flex; }
+  .tui-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .tui-header .tui-title { font-weight: 600; font-size: 14px; }
+  .tui-close {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .tui-close:hover { background: var(--border); }
+  .tui-terminal { flex: 1; padding: 8px; }
+  .tui-banner {
+    display: none;
+    padding: 12px 20px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .tui-banner.completed { display: block; background: rgba(63,185,80,0.15); color: var(--green); }
+  .tui-banner.failed { display: block; background: rgba(248,81,73,0.15); color: var(--red); }
+  .tui-banner.timeout { display: block; background: rgba(219,109,40,0.15); color: var(--orange); }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#x1F528; BTB Dashboard</h1>
+  <div class="status" id="refresh-status">Auto-refresh: active</div>
+</header>
+
+<div class="container">
+  <div class="section" id="running-section">
+    <h2>Running <span class="count" id="running-count">0</span></h2>
+    <div id="running-jobs"></div>
+  </div>
+  <div class="section" id="pending-section">
+    <h2>Queued <span class="count" id="pending-count">0</span></h2>
+    <div id="pending-jobs"></div>
+  </div>
+  <div class="section" id="completed-section">
+    <h2>Completed <span class="count" id="completed-count">0</span></h2>
+    <div id="completed-jobs"></div>
+  </div>
+</div>
+
+<!-- TUI Overlay -->
+<div class="tui-overlay" id="tui-overlay">
+  <div class="tui-header">
+    <span class="tui-title" id="tui-title">Live TUI</span>
+    <button class="tui-close" id="tui-close">Close (Esc)</button>
+  </div>
+  <div class="tui-banner" id="tui-banner"></div>
+  <div class="tui-terminal" id="tui-terminal"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  let refreshTimer = null;
+  let currentWs = null;
+  let currentTerm = null;
+  let currentFit = null;
+  let currentJobId = null;
+  let lastJobData = {};
+
+  // --- Helpers ---
+  function extractRepoName(url) {
+    if (!url) return 'unknown';
+    const m = url.match(/\/([^/]+?)(?:\.git)?$/);
+    return m ? m[1] : url;
+  }
+
+  function truncateId(id) {
+    return id ? id.substring(0, 8) : '';
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleString();
+  }
+
+  function badgeClass(status) {
+    const map = { running: 'badge-running', pending: 'badge-pending', completed: 'badge-completed', failed: 'badge-failed', timeout: 'badge-timeout' };
+    return map[status] || '';
+  }
+
+  // --- Render ---
+  function renderJobCard(job, opts) {
+    const card = document.createElement('div');
+    card.className = 'job-card' + (opts.clickable ? ' clickable' : '');
+    card.dataset.jobId = job.id;
+
+    let retryHtml = '';
+    if (job.retry_of) {
+      retryHtml = '<a class="retry-link" href="#" onclick="event.stopPropagation(); return false;" title="View original job">&#x1F504; retry of ' + truncateId(job.retry_of) + '</a>';
+    }
+
+    let actionsHtml = '';
+    if (opts.showRetry && ['completed', 'failed', 'timeout'].includes(job.status)) {
+      actionsHtml = '<button class="btn btn-retry" data-retry-id="' + job.id + '">Retry</button>';
+    }
+
+    let pushInfo = '';
+    if (job.push_success === true) {
+      pushInfo = '<span title="Results pushed">&#x2705; pushed</span>';
+    } else if (job.push_success === false) {
+      pushInfo = '<span title="Push failed: ' + (job.push_error || '') + '">&#x274C; push failed</span>';
+    }
+
+    card.innerHTML =
+      '<div class="job-info">' +
+        '<div class="job-id">' + truncateId(job.id) + ' ' + retryHtml + '</div>' +
+        '<div class="job-repo">' + extractRepoName(job.repo_url) + ' <span style="font-weight:400;color:var(--text-muted)">/ ' + job.branch + '</span></div>' +
+        '<div class="job-meta">' +
+          '<span><b>Spec:</b> ' + (job.spec_name || '—') + '</span>' +
+          '<span><b>By:</b> ' + (job.pusher || '—') + '</span>' +
+          '<span><b>Submitted:</b> ' + formatTime(job.submitted_at) + '</span>' +
+          (job.started_at ? '<span><b>Started:</b> ' + formatTime(job.started_at) + '</span>' : '') +
+          (job.completed_at ? '<span><b>Completed:</b> ' + formatTime(job.completed_at) + '</span>' : '') +
+          pushInfo +
+        '</div>' +
+      '</div>' +
+      '<span class="badge ' + badgeClass(job.status) + '">' + job.status + '</span>' +
+      actionsHtml;
+
+    if (opts.clickable) {
+      card.addEventListener('click', function() { openTUI(job.id, job); });
+    }
+
+    const retryBtn = card.querySelector('[data-retry-id]');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        retryJob(job.id, retryBtn);
+      });
+    }
+
+    return card;
+  }
+
+  function renderJobs(data) {
+    const runningEl = document.getElementById('running-jobs');
+    const pendingEl = document.getElementById('pending-jobs');
+    const completedEl = document.getElementById('completed-jobs');
+
+    document.getElementById('running-count').textContent = data.running ? '1' : '0';
+    document.getElementById('pending-count').textContent = data.pending.length;
+    document.getElementById('completed-count').textContent = data.completed.length;
+
+    runningEl.innerHTML = '';
+    if (data.running) {
+      runningEl.appendChild(renderJobCard(data.running, { clickable: true, showRetry: false }));
+      lastJobData[data.running.id] = data.running;
+    } else {
+      runningEl.innerHTML = '<div class="empty">No jobs currently running</div>';
+    }
+
+    pendingEl.innerHTML = '';
+    if (data.pending.length > 0) {
+      data.pending.forEach(function(job) {
+        pendingEl.appendChild(renderJobCard(job, { clickable: false, showRetry: false }));
+      });
+    } else {
+      pendingEl.innerHTML = '<div class="empty">No jobs in queue</div>';
+    }
+
+    completedEl.innerHTML = '';
+    if (data.completed.length > 0) {
+      data.completed.forEach(function(job) {
+        completedEl.appendChild(renderJobCard(job, { clickable: false, showRetry: true }));
+        lastJobData[job.id] = job;
+      });
+    } else {
+      completedEl.innerHTML = '<div class="empty">No completed jobs yet</div>';
+    }
+
+    // Check if the currently viewed TUI job has completed
+    if (currentJobId && data.running && data.running.id !== currentJobId) {
+      checkJobCompletion(currentJobId);
+    } else if (currentJobId && !data.running) {
+      checkJobCompletion(currentJobId);
+    }
+  }
+
+  // --- API ---
+  function fetchJobs() {
+    fetch('/api/jobs')
+      .then(function(r) { return r.json(); })
+      .then(renderJobs)
+      .catch(function(err) { console.error('Failed to fetch jobs:', err); });
+  }
+
+  function retryJob(jobId, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Retrying...';
+    fetch('/api/jobs/' + jobId + '/retry', { method: 'POST' })
+      .then(function(r) {
+        if (r.status === 201) {
+          return r.json().then(function(data) {
+            btn.textContent = 'Retried \u2713';
+            fetchJobs();
+          });
+        } else {
+          return r.json().then(function(data) {
+            btn.textContent = 'Retry';
+            btn.disabled = false;
+            alert('Retry failed: ' + (data.error || 'Unknown error'));
+          });
+        }
+      })
+      .catch(function(err) {
+        btn.textContent = 'Retry';
+        btn.disabled = false;
+        alert('Retry failed: ' + err.message);
+      });
+  }
+
+  function checkJobCompletion(jobId) {
+    fetch('/api/jobs/' + jobId)
+      .then(function(r) { return r.json(); })
+      .then(function(job) {
+        if (['completed', 'failed', 'timeout'].includes(job.status)) {
+          showCompletionBanner(job.status);
+        }
+      })
+      .catch(function() {});
+  }
+
+  // --- TUI Viewer ---
+  function openTUI(jobId, job) {
+    currentJobId = jobId;
+    var overlay = document.getElementById('tui-overlay');
+    var termEl = document.getElementById('tui-terminal');
+    var banner = document.getElementById('tui-banner');
+    var title = document.getElementById('tui-title');
+
+    overlay.classList.add('active');
+    banner.className = 'tui-banner';
+    banner.style.display = 'none';
+    title.textContent = 'Live TUI — ' + extractRepoName(job.repo_url) + ' / ' + job.branch;
+
+    termEl.innerHTML = '';
+
+    currentTerm = new Terminal({
+      theme: { background: '#0d1117', foreground: '#c9d1d9' },
+      fontSize: 14,
+      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+      cursorBlink: false,
+      scrollback: 10000,
+    });
+    currentFit = new FitAddon.FitAddon();
+    currentTerm.loadAddon(currentFit);
+    currentTerm.open(termEl);
+    currentFit.fit();
+
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = proto + '//' + location.host + '/ws/jobs/' + jobId + '/tui';
+    currentWs = new WebSocket(wsUrl);
+    currentWs.binaryType = 'arraybuffer';
+
+    currentWs.onmessage = function(event) {
+      var data = new Uint8Array(event.data);
+      currentTerm.write(data);
+    };
+
+    currentWs.onerror = function() {
+      currentTerm.write('\r\n[WebSocket error]\r\n');
+    };
+
+    currentWs.onclose = function() {
+      // Check if job completed
+      checkJobCompletion(jobId);
+    };
+
+    window.addEventListener('resize', onResize);
+  }
+
+  function closeTUI() {
+    var overlay = document.getElementById('tui-overlay');
+    overlay.classList.remove('active');
+    currentJobId = null;
+
+    if (currentWs) {
+      currentWs.close();
+      currentWs = null;
+    }
+    if (currentTerm) {
+      currentTerm.dispose();
+      currentTerm = null;
+    }
+    currentFit = null;
+    window.removeEventListener('resize', onResize);
+  }
+
+  function showCompletionBanner(status) {
+    var banner = document.getElementById('tui-banner');
+    banner.className = 'tui-banner ' + status;
+    banner.textContent = 'Job ' + status + (status === 'completed' ? ' successfully' : '') + '!';
+    banner.style.display = 'block';
+  }
+
+  function onResize() {
+    if (currentFit) {
+      try { currentFit.fit(); } catch(e) {}
+    }
+  }
+
+  // --- Events ---
+  document.getElementById('tui-close').addEventListener('click', closeTUI);
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeTUI();
+  });
+
+  // --- Init ---
+  fetchJobs();
+  refreshTimer = setInterval(fetchJobs, 10000);
+})();
+</script>
+</body>
+</html>

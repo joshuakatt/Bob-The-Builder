@@ -77,10 +77,43 @@ log_to_file() {
 # Extract all leaf task IDs (subtasks like 1.1, 2.3)
 get_all_leaf_tasks() {
     local task_file="$1"
-    awk '/^[[:space:]]+-[[:space:]]\[.\][[:space:]][0-9]+\.[0-9]+/ {
-        match($0, /[0-9]+\.[0-9]+/)
-        print substr($0, RSTART, RLENGTH)
-    }' "$task_file"
+    # Returns all executable task IDs:
+    # 1. Indented subtasks like "  - [ ] 1.1 ..." (have a dot in the ID)
+    # 2. Top-level tasks that have NO subtasks (e.g. checkpoints like "- [ ] 3. Checkpoint...")
+    python3 - "$task_file" <<'PYEOF'
+import re, sys
+
+with open(sys.argv[1]) as f:
+    lines = f.readlines()
+
+# Pass 1: collect all subtask IDs (indented, have parent.child format)
+subtask_ids = []
+parents_with_children = set()
+for line in lines:
+    # Indented subtask: starts with whitespace
+    m = re.match(r'^\s+-\s+\[.\]\s+(\d+)\.(\d+\S*)', line)
+    if m:
+        parent_id = m.group(1)
+        full_id = parent_id + '.' + m.group(2)
+        subtask_ids.append(full_id)
+        parents_with_children.add(parent_id)
+
+# Pass 2: collect top-level tasks that have NO children (childless parents = leaf)
+childless_ids = []
+for line in lines:
+    # Top-level task: no leading whitespace
+    m = re.match(r'^-\s+\[.\]\s+(\d+)\.\s', line)
+    if m:
+        tid = m.group(1)
+        if tid not in parents_with_children:
+            childless_ids.append(tid)
+
+# Output subtasks first, then childless top-level tasks
+for tid in subtask_ids:
+    print(tid)
+for tid in childless_ids:
+    print(tid)
+PYEOF
 }
 
 # Extract all parent task IDs (top-level like 1, 2, 3)
@@ -93,13 +126,33 @@ get_all_parent_tasks() {
 }
 
 # Check if a specific task is complete (returns 0=yes, 1=no)
+# Handles both subtask IDs (1.1, 2.3) and top-level IDs (3, 7)
 is_task_complete() {
     local task_file="$1"
     local task_id="$2"
-    awk -v tid="$task_id" '
-        $0 ~ "\\[x\\][[:space:]]+" tid { found=1; exit }
-        END { exit !found }
-    ' "$task_file"
+    # Use python for reliable boundary-aware matching.
+    # Bash heredoc with <<'PYEOF' prevents any shell interpolation inside.
+    python3 - "$task_file" "$task_id" <<'PYEOF'
+import re, sys
+
+task_file = sys.argv[1]
+tid = sys.argv[2]
+
+with open(task_file) as f:
+    for line in f:
+        # Match [x] followed by whitespace then the task ID
+        # The ID must be followed by a dot-space (top-level "3. ") or whitespace (subtask "1.1 ")
+        m = re.search(r'\[x\]\s+' + re.escape(tid) + r'(?:\.?\s)', line)
+        if m:
+            # Verify the ID is not a suffix of a larger number (e.g. "3" matching "13")
+            prefix = line[:m.start()]
+            # After [x] and spaces, the ID should not be preceded by a digit
+            stripped = prefix.rstrip()
+            if stripped and stripped[-1].isdigit():
+                continue
+            sys.exit(0)
+sys.exit(1)
+PYEOF
 }
 
 # Check if ALL subtasks of a parent are complete
@@ -115,34 +168,57 @@ is_parent_complete() {
 }
 
 # Get task description by ID
+# Handles both subtask IDs (1.1, 2.3) and top-level checkpoint IDs (3, 7)
 get_task_description() {
     local task_file="$1"
     local task_id="$2"
-    awk -v tid="$task_id" '
-        $0 ~ "\\[.\\][[:space:]]+" tid "[[:space:]]" {
-            sub(/.*\[.\][[:space:]]+[0-9.]+[[:space:]]+/, "")
-            print
-            exit
-        }
-    ' "$task_file"
+    # Use python for boundary-aware matching — awk can't reliably distinguish
+    # "3" from "13" or "3.1" without proper word boundary support.
+    python3 - "$task_file" "$task_id" <<'PYEOF'
+import re, sys
+
+task_file = sys.argv[1]
+tid = sys.argv[2]
+
+with open(task_file) as f:
+    for line in f:
+        # Match [.] then whitespace then the task ID followed by dot-space or just space
+        m = re.search(r'\[.\]\s+' + re.escape(tid) + r'(?:\.?\s)(.*)', line)
+        if m:
+            # Verify not a suffix of a larger number
+            prefix = line[:m.start()]
+            stripped = prefix.rstrip()
+            if stripped and stripped[-1].isdigit():
+                continue
+            desc = m.group(1).strip()
+            # For top-level tasks like "3. Checkpoint - Profiler Complete",
+            # the regex already consumed the ". " so desc starts at the description
+            print(desc)
+            sys.exit(0)
+# No match — print empty
+PYEOF
 }
 
-# Count incomplete leaf tasks
+# Count incomplete leaf tasks (subtasks + childless top-level tasks)
 count_incomplete_tasks() {
     local task_file="$1"
-    awk '/^[[:space:]]+-[[:space:]]\[ \][[:space:]][0-9]+\.[0-9]+/ { n++ } END { print n+0 }' "$task_file"
+    get_all_leaf_tasks "$task_file" | while read -r tid; do
+        is_task_complete "$task_file" "$tid" || echo "$tid"
+    done | wc -l | tr -d ' '
 }
 
-# Count completed leaf tasks
+# Count completed leaf tasks (subtasks + childless top-level tasks)
 count_completed_tasks() {
     local task_file="$1"
-    awk '/^[[:space:]]+-[[:space:]]\[x\][[:space:]][0-9]+\.[0-9]+/ { n++ } END { print n+0 }' "$task_file"
+    get_all_leaf_tasks "$task_file" | while read -r tid; do
+        is_task_complete "$task_file" "$tid" && echo "$tid"
+    done | wc -l | tr -d ' '
 }
 
-# Count total leaf tasks
+# Count total leaf tasks (subtasks + childless top-level tasks)
 count_total_tasks() {
     local task_file="$1"
-    awk '/^[[:space:]]+-[[:space:]]\[.\][[:space:]][0-9]+\.[0-9]+/ { n++ } END { print n+0 }' "$task_file"
+    get_all_leaf_tasks "$task_file" | wc -l | tr -d ' '
 }
 
 # ─── Git Helpers ─────────────────────────────────────────────
@@ -229,20 +305,28 @@ create_worktree() {
     fi
     git branch -D "$branch_name" >/dev/null 2>&1 || true
 
+    # Prune stale worktree metadata — git can refuse to create a worktree
+    # if it thinks the branch is already checked out in a (now-deleted) worktree
+    git worktree prune >/dev/null 2>&1 || true
+
     # Retry loop: git worktree add can fail if the index is locked by a
     # concurrent git operation (sync, merge, commit). Retry with backoff.
     local max_attempts=5
     local attempt=0
+    local _wt_err=""
     while [ "$attempt" -lt "$max_attempts" ]; do
         attempt=$((attempt + 1))
-        if git worktree add "$worktree_path" -b "$branch_name" >/dev/null 2>&1; then
-            break
+        _wt_err=$(git worktree add "$worktree_path" -b "$branch_name" 2>&1) && break
+        # Log the actual error for diagnostics
+        if declare -F dbg &>/dev/null; then
+            dbg "create_worktree: attempt ${attempt}/${max_attempts} failed for ${task_id}: ${_wt_err}"
         fi
         if [ "$attempt" -lt "$max_attempts" ]; then
             sleep "$attempt"  # linear backoff: 1s, 2s, 3s, 4s
             # Clean up partial state from failed attempt
             git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
             git branch -D "$branch_name" >/dev/null 2>&1 || true
+            git worktree prune >/dev/null 2>&1 || true
         fi
     done
 

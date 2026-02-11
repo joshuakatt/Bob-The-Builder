@@ -59,12 +59,43 @@ TASK_DESC=$(awk -v tid="$TASK_ID" '
 ' "$TASK_FILE" 2>/dev/null)
 TASK_DESC="${TASK_DESC:-Unknown task}"
 
+_agent_skip_count=0
+
 for ((i=1; i<=MAX_ITERATIONS; i++)); do
     log_task "Task ${TASK_ID} - Iteration ${i}/${MAX_ITERATIONS}"
     echo "$(date +%Y-%m-%dT%H:%M:%S) ITERATION i=${i} task=${TASK_ID}" >> "$LOG_FILE"
 
     # Touch heartbeat so orchestrator knows we're actively working
     touch "${HEARTBEAT_FILE:-/dev/null}" 2>/dev/null || true
+
+    # Verify agent file exists before wasting an iteration on a guaranteed failure.
+    # If missing (disk pressure, failed copy), wait and retry without counting it.
+    _agent_name="${WORKER_AGENT:-player}"
+    _agent_file=".kiro/agents/${_agent_name}.json"
+    if [ ! -f "$_agent_file" ]; then
+        _agent_wait_ok=false
+        for _aw in 1 2 3 4 5; do
+            echo "$(date +%Y-%m-%dT%H:%M:%S) WARN agent file ${_agent_file} missing, waiting (attempt ${_aw}/5)" >> "$LOG_FILE"
+            touch "${HEARTBEAT_FILE:-/dev/null}" 2>/dev/null || true
+            sleep 10
+            if [ -f "$_agent_file" ]; then
+                _agent_wait_ok=true
+                break
+            fi
+        done
+        if [ "$_agent_wait_ok" = false ]; then
+            echo "$(date +%Y-%m-%dT%H:%M:%S) ERROR agent file ${_agent_file} still missing after 50s — skipping iteration" >> "$LOG_FILE"
+            # Don't count this as an iteration — decrement so the for loop re-runs this index
+            i=$((i - 1))
+            # But cap total skips to avoid infinite loop if agent is permanently gone
+            _agent_skip_count=$((_agent_skip_count + 1))
+            if [ "$_agent_skip_count" -ge 3 ]; then
+                echo "$(date +%Y-%m-%dT%H:%M:%S) ERROR agent file missing after 3 skip cycles — giving up" >> "$LOG_FILE"
+                exit 1
+            fi
+            continue
+        fi
+    fi
 
     # Check if task is already complete (another worker or previous iteration)
     echo "$(date +%Y-%m-%dT%H:%M:%S) DEBUG checking_completion task=${TASK_ID}" >> "$LOG_FILE"
@@ -149,8 +180,9 @@ RULES:
     #
     # "Activity" means ANY of:
     #   1. The log file was modified (agent is producing output)
-    #   2. The kiro-cli process has child processes (a shell command is running,
-    #      e.g. a long test suite or build that produces no log output)
+    #   2. The kiro-cli process has descendant processes anywhere in its tree
+    #      (a shell command is running, e.g. a long build, test suite, or
+    #      training script — these can be grandchildren or deeper)
     #   3. The kiro-cli process itself is alive and consuming CPU
     #
     # This lets tasks run for hours if they're genuinely working, while the
@@ -169,10 +201,25 @@ RULES:
                 fi
             fi
 
-            # Check 2: kiro-cli has child processes (running a shell command)
+            # Check 2: kiro-cli has descendant processes ANYWHERE in its tree.
+            # Walk recursively — cargo build, gradle, python training, etc. are
+            # grandchildren+ of kiro-cli. pgrep -P only finds direct children.
             if [ "$active" = false ]; then
-                child_count=$(pgrep -P "$kiro_bg_pid" 2>/dev/null | wc -l || echo "0")
-                if [ "$child_count" -gt 0 ]; then
+                desc_count=$(python3 -c "
+import subprocess, sys
+def descendants(pid):
+    try:
+        out = subprocess.check_output(['pgrep', '-P', str(pid)], stderr=subprocess.DEVNULL, text=True)
+        children = [int(p) for p in out.strip().split() if p]
+    except (subprocess.CalledProcessError, ValueError):
+        children = []
+    result = list(children)
+    for c in children:
+        result.extend(descendants(c))
+    return result
+print(len(descendants(int(sys.argv[1]))))
+" "$kiro_bg_pid" 2>/dev/null) || desc_count=0
+                if [ "$desc_count" -gt 0 ]; then
                     active=true
                 fi
             fi

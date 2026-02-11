@@ -102,6 +102,49 @@ _install_agents
 
 source "${SCRIPT_DIR}/config.sh"
 
+# ─── Validate Spec Files Are Committed ───────────────────────
+# Worktrees are created from git commits. If spec files aren't committed,
+# they won't exist in the worktree and workers will crash.
+_validate_spec_committed() {
+    local spec_dir="${SPEC_DIR:-}"
+    [ -z "$spec_dir" ] && return 0
+    [ ! -d "$spec_dir" ] && return 0  # Will fail later with proper error
+
+    # Check if any spec files are untracked or modified
+    local untracked modified
+    untracked=$(git ls-files --others --exclude-standard "$spec_dir" 2>/dev/null | head -5)
+    modified=$(git diff --name-only "$spec_dir" 2>/dev/null | head -5)
+
+    if [ -n "$untracked" ] || [ -n "$modified" ]; then
+        echo ""
+        echo "⚠️  Spec files are not committed to git!"
+        echo ""
+        echo "btb creates git worktrees for parallel task execution. Uncommitted files"
+        echo "won't exist in the worktrees, causing workers to crash."
+        echo ""
+        if [ -n "$untracked" ]; then
+            echo "Untracked files in ${spec_dir}:"
+            echo "$untracked" | sed 's/^/  /'
+        fi
+        if [ -n "$modified" ]; then
+            echo "Modified files in ${spec_dir}:"
+            echo "$modified" | sed 's/^/  /'
+        fi
+        echo ""
+        echo "Auto-committing spec files..."
+        git add "$spec_dir" 2>/dev/null || true
+        if git commit -m "btb: auto-commit spec files for ${SPEC_NAME:-unknown}" >/dev/null 2>&1; then
+            echo "✓ Spec files committed successfully."
+        else
+            echo "⚠️  Could not auto-commit. Please commit manually:"
+            echo "   git add ${spec_dir} && git commit -m 'Add spec'"
+            exit 1
+        fi
+        echo ""
+    fi
+}
+_validate_spec_committed
+
 # Derive SPEC_NAME for display if only SPEC_DIR was given
 if [ -z "$SPEC_NAME" ] && [ -n "${SPEC_DIR:-}" ]; then
     SPEC_NAME=$(basename "$SPEC_DIR")
@@ -156,26 +199,67 @@ spawn_worker() {
 
     # If worktree creation failed (index lock, etc.), defer the task
     if [ -z "$worktree_path" ] || [ ! -d "$worktree_path" ]; then
-        dbg "worktree creation failed for task ${task_id} — deferring (worktree_path='${worktree_path}')"
+        # Track consecutive worktree failures per task
+        local _wt_fail_file="${STATE_DIR}/${task_id}.wt_failures"
+        local _wt_fails=0
+        [ -f "$_wt_fail_file" ] && _wt_fails=$(cat "$_wt_fail_file")
+        _wt_fails=$((_wt_fails + 1))
+        echo "$_wt_fails" > "$_wt_fail_file"
+
+        dbg "worktree creation failed for task ${task_id} — deferring (worktree_path='${worktree_path}') [wt_fail=${_wt_fails}]"
         dbg "  git status: $(git status --porcelain 2>/dev/null | head -3 | tr '\n' ' ')"
         dbg "  git branch: $(git branch --show-current 2>/dev/null || echo '?')"
         dbg "  index.lock exists: $([ -f .git/index.lock ] && echo 'YES' || echo 'no')"
+        dbg "  worktree list: $(git worktree list 2>/dev/null | head -5 | tr '\n' ' ')"
+
+        # After 3 consecutive worktree failures, mark the task as failed
+        # to avoid infinite retry loops
+        if [ "$_wt_fails" -ge 3 ]; then
+            dbg "task ${task_id} worktree creation failed ${_wt_fails} times — marking FAILED"
+            tui_event "✗ task ${task_id} FAILED — worktree creation failed ${_wt_fails} times"
+            set_task_state "$task_id" "failed"
+            tui_set_task_state "$task_id" "failed"
+            TOTAL_FAILED=$((TOTAL_FAILED + 1))
+            return 1
+        fi
+
         tui_event "⚠ worktree creation failed for ${task_id}, will retry next cycle"
         set_task_state "$task_id" "pending"
         return 1
     fi
+
+    # Reset worktree failure counter on success
+    rm -f "${STATE_DIR}/${task_id}.wt_failures" 2>/dev/null || true
 
     set_task_wt "$task_id" "$worktree_path"
 
     # Copy .kiro/ artifacts into the worktree — these may not be committed
     # to git yet, so git worktree add won't include them. Without this,
     # kiro-cli inside the worktree can't find agent definitions or steering docs.
-    for _kiro_sub in agents steering settings; do
-        if [ -d ".kiro/${_kiro_sub}" ]; then
-            mkdir -p "${worktree_path}/.kiro/${_kiro_sub}"
-            cp -a ".kiro/${_kiro_sub}/." "${worktree_path}/.kiro/${_kiro_sub}/" 2>/dev/null || true
+    # Retry the copy with verification — disk pressure can cause silent failures.
+    local _kiro_copy_ok=false
+    for _kiro_copy_attempt in 1 2 3; do
+        for _kiro_sub in agents steering settings; do
+            if [ -d ".kiro/${_kiro_sub}" ]; then
+                mkdir -p "${worktree_path}/.kiro/${_kiro_sub}" 2>/dev/null || true
+                cp -a ".kiro/${_kiro_sub}/." "${worktree_path}/.kiro/${_kiro_sub}/" 2>/dev/null || true
+            fi
+        done
+        # Verify the critical file landed
+        if [ -f "${worktree_path}/.kiro/agents/${WORKER_AGENT:-player}.json" ]; then
+            _kiro_copy_ok=true
+            break
         fi
+        dbg "WARNING: .kiro/agents/${WORKER_AGENT:-player}.json missing after copy attempt ${_kiro_copy_attempt} for task ${task_id}"
+        sleep 5
     done
+    if [ "$_kiro_copy_ok" = false ]; then
+        dbg "CRITICAL: agent files failed to copy after 3 attempts for task ${task_id} — deferring"
+        tui_event "⚠ agent copy failed for ${task_id}, deferring"
+        cleanup_worktree "$task_id" "$WORKTREE_BASE" 2>/dev/null || true
+        set_task_state "$task_id" "pending"
+        return 1
+    fi
 
     local task_log
     task_log="$(pwd)/${LOG_DIR}/task_${task_id//\./_}_${TIMESTAMP}.log"
@@ -193,6 +277,22 @@ spawn_worker() {
 
     (
         cd "$worktree_path"
+
+        # Shared build cache — point language-specific build dirs to a shared
+        # location so parallel worktrees don't each create multi-GB copies.
+        if [ -n "${SHARED_BUILD_CACHE_DIR_ABS:-}" ]; then
+            # Rust: CARGO_TARGET_DIR overrides per-project target/
+            export CARGO_TARGET_DIR="${SHARED_BUILD_CACHE_DIR_ABS}/cargo-target"
+            # Gradle
+            export GRADLE_USER_HOME="${SHARED_BUILD_CACHE_DIR_ABS}/gradle"
+            # Go
+            export GOPATH="${SHARED_BUILD_CACHE_DIR_ABS}/go"
+            export GOCACHE="${SHARED_BUILD_CACHE_DIR_ABS}/go-cache"
+            # Python pip cache
+            export PIP_CACHE_DIR="${SHARED_BUILD_CACHE_DIR_ABS}/pip-cache"
+            mkdir -p "$CARGO_TARGET_DIR" "$GRADLE_USER_HOME" "$GOCACHE" "$PIP_CACHE_DIR" 2>/dev/null || true
+        fi
+
         HEARTBEAT_FILE="$heartbeat_file" \
         FAIL_CONTEXT_FILE="$fail_ctx_file" \
         bash "${SCRIPT_DIR}/lib/worker.sh" \
@@ -222,6 +322,214 @@ count_running() {
         [ "$(cat "$f")" = "running" ] && count=$((count + 1))
     done
     echo "$count"
+}
+
+# ─── Health Check Context Assembly ───────────────────────────
+# Builds a diagnostic payload for the health-checker agent.
+# Output: structured text to stdout — no side effects.
+assemble_health_context() {
+    local task_id="$1"
+    local task_desc elapsed log_tail descendants
+
+    task_desc=$(get_task_description "$TASK_FILE" "$task_id")
+    local started=$(cat "${STATE_DIR}/${task_id}.started" 2>/dev/null || echo "$(date +%s)")
+    elapsed=$(( $(date +%s) - started ))
+
+    # Get log tail, strip ANSI codes
+    local task_log=$(tui_get_task_log "$task_id" 2>/dev/null || echo "")
+    if [ -n "$task_log" ] && [ -f "$task_log" ]; then
+        log_tail=$(tail -n "${HEALTH_CHECK_LOG_LINES}" "$task_log" 2>/dev/null \
+            | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' || echo "(no log output)")
+    else
+        log_tail="(no log file found)"
+    fi
+
+    # Get descendant processes — include full command line for richer context
+    local pid=$(get_task_pid "$task_id")
+    descendants=$(python3 -c "
+import subprocess, sys
+def descendants(pid):
+    try:
+        out = subprocess.check_output(['pgrep', '-P', str(pid)], stderr=subprocess.DEVNULL, text=True)
+        children = [int(p) for p in out.strip().split() if p]
+    except: children = []
+    result = list(children)
+    for c in children: result.extend(descendants(c))
+    return result
+for d in descendants(int(sys.argv[1])):
+    try:
+        cmd = subprocess.check_output(['ps', '-p', str(d), '-o', 'command='], stderr=subprocess.DEVNULL, text=True).strip()
+        # Truncate long command lines to keep context manageable
+        if len(cmd) > 300: cmd = cmd[:300] + '...'
+        print(f'  PID {d}: {cmd}')
+    except: pass
+" "$pid" 2>/dev/null || echo "  (unable to enumerate)")
+
+    cat <<EOF
+TASK HEALTH CHECK REQUEST
+=========================
+Task ID: ${task_id}
+Task Description: ${task_desc}
+Spec: ${SPEC_NAME}
+Task File: ${TASK_FILE}
+Elapsed Runtime: ${elapsed} seconds ($((elapsed / 60)) minutes)
+
+DESCENDANT PROCESSES:
+${descendants:-  (none)}
+
+LAST ${HEALTH_CHECK_LOG_LINES} LINES OF TASK LOG:
+${log_tail}
+EOF
+}
+
+# ─── Health Check Verdict Parsing ────────────────────────────
+# Reads an LLM response from stdin and outputs verdict="X" reason="Y"
+# on stdout, suitable for eval. Searches for KILL_AND_FAIL first,
+# then KILL_AND_RETRY, then CONTINUE (most specific first).
+# Defaults to CONTINUE with reason "unparseable response" if no keyword found.
+# Truncates reason to 200 chars.
+parse_health_verdict() {
+    python3 -c '
+import sys, re
+
+response = sys.stdin.read()
+
+for line in response.split("\n"):
+    line_upper = line.strip().upper()
+    for v in ["KILL_AND_FAIL", "KILL_AND_RETRY", "CONTINUE"]:
+        if v in line_upper:
+            # Extract reasoning: strip everything up to and including the verdict keyword
+            reason = re.sub(r".*(" + v + r")[:\s]*", "", line, flags=re.IGNORECASE).strip()
+            reason = reason[:200]
+            # Escape backslashes and double quotes for safe shell eval
+            reason = reason.replace("\\", "\\\\").replace("\"", "\\\"")
+            print("verdict=\"{}\"".format(v))
+            print("reason=\"{}\"".format(reason))
+            sys.exit(0)
+
+# No verdict keyword found
+print("verdict=\"CONTINUE\"")
+print("reason=\"unparseable response\"")
+' 2>/dev/null
+}
+
+# ─── Health Check Trigger ────────────────────────────────────
+# Called for each running worker during poll_and_sync. Checks
+# wall-clock eligibility and spawns a background kiro-cli call
+# with the health-checker agent if a check is due.
+# Non-blocking — the kiro-cli call runs in a background subshell.
+maybe_start_health_check() {
+    local task_id="$1"
+
+    # Skip if disabled
+    [ "${HEALTH_CHECK_ENABLED:-true}" != "true" ] && return 0
+
+    # Skip if a health check is already in progress for this task
+    local hc_pid_file="${STATE_DIR}/${task_id}.hc_pid"
+    if [ -f "$hc_pid_file" ]; then
+        local hc_pid=$(cat "$hc_pid_file")
+        if kill -0 "$hc_pid" 2>/dev/null; then
+            return 0  # still running
+        fi
+    fi
+
+    # Check wall-clock eligibility
+    local started=$(cat "${STATE_DIR}/${task_id}.started" 2>/dev/null || echo "")
+    [ -z "$started" ] && return 0
+    local now=$(date +%s)
+    local elapsed=$((now - started))
+    [ "$elapsed" -lt "${HEALTH_CHECK_INTERVAL}" ] && return 0
+
+    # Check cooldown from last health check
+    local last_hc=$(cat "${STATE_DIR}/${task_id}.last_hc" 2>/dev/null || echo "0")
+    local since_last=$((now - last_hc))
+    [ "$since_last" -lt "${HEALTH_CHECK_INTERVAL}" ] && return 0
+
+    # Assemble context and spawn background check
+    local context=$(assemble_health_context "$task_id")
+    local result_file="${STATE_DIR}/${task_id}.hc_result"
+    rm -f "$result_file"
+
+    tui_event "🏥 health check for task ${task_id} (running ${elapsed}s)"
+    dbg "health_check: starting for task ${task_id}, elapsed=${elapsed}s"
+
+    (
+        local response
+        response=$(kiro-cli chat --no-interactive \
+            --agent health-checker \
+            --model "${HEALTH_CHECK_MODEL}" \
+            --trust-all-tools \
+            "$context" 2>/dev/null) || response="ERROR: kiro-cli failed"
+        echo "$response" > "$result_file"
+    ) &
+
+    echo "$!" > "$hc_pid_file"
+    echo "$now" > "${STATE_DIR}/${task_id}.last_hc"
+}
+
+# ─── Health Check Result Processing ──────────────────────────
+# Called for each running worker during poll_and_sync. Checks if
+# a background health check has completed and processes the verdict.
+# Uses parse_health_verdict (from task 2.3) to extract the verdict.
+process_health_check_result() {
+    local task_id="$1"
+    local hc_pid_file="${STATE_DIR}/${task_id}.hc_pid"
+    local result_file="${STATE_DIR}/${task_id}.hc_result"
+
+    # No health check was started
+    [ ! -f "$hc_pid_file" ] && return 0
+
+    # Check if still running
+    local hc_pid=$(cat "$hc_pid_file")
+    if kill -0 "$hc_pid" 2>/dev/null; then
+        return 0  # still in progress
+    fi
+
+    # Clean up PID file
+    rm -f "$hc_pid_file"
+
+    # Read result
+    if [ ! -f "$result_file" ]; then
+        dbg "health_check: no result file for ${task_id}, treating as CONTINUE"
+        return 0
+    fi
+
+    local response=$(cat "$result_file")
+    rm -f "$result_file"
+
+    # Parse verdict using inline python3 parser (parse_health_verdict from task 2.3)
+    local verdict reason
+    eval $(echo "$response" | parse_health_verdict) || { verdict="CONTINUE"; reason="parse error"; }
+
+    dbg "health_check: task=${task_id} verdict=${verdict} reason=${reason}"
+
+    local pid=$(get_task_pid "$task_id")
+
+    case "$verdict" in
+        CONTINUE)
+            tui_event "🏥 ${task_id}: CONTINUE — ${reason}"
+            ;;
+        KILL_AND_RETRY)
+            tui_event "🏥 ${task_id}: KILL_AND_RETRY — ${reason}"
+            tui_event "⚠ killing task ${task_id} (health check: retry)"
+            kill_tree "$pid" 2>/dev/null || true
+            # Save failure context
+            local fail_ctx="${STATE_DIR}/${task_id}.fail_context"
+            echo "FAILURE_TYPE=health_check_kill" > "$fail_ctx"
+            echo "VERDICT=KILL_AND_RETRY" >> "$fail_ctx"
+            echo "REASON=${reason}" >> "$fail_ctx"
+            # Let poll_and_sync's normal exit-code handling do the retry
+            ;;
+        KILL_AND_FAIL)
+            tui_event "🏥 ${task_id}: KILL_AND_FAIL — ${reason}"
+            tui_event "✗ task ${task_id} FAILED (health check: permanent)"
+            kill_tree "$pid" 2>/dev/null || true
+            set_task_state "$task_id" "failed"
+            tui_set_task_state "$task_id" "failed"
+            cleanup_worktree "$task_id" "$WORKTREE_BASE"
+            TOTAL_FAILED=$((TOTAL_FAILED + 1))
+            ;;
+    esac
 }
 
 # ─── Cleanup Trap ────────────────────────────────────────────
@@ -256,6 +564,17 @@ cleanup_on_exit() {
         git branch -D "$br" >/dev/null 2>&1 || true
     done
     rm -rf "$WORKTREE_BASE" 2>/dev/null || true
+
+    # Kill any orphaned health check background processes before removing STATE_DIR
+    for hc_pid_file in "${STATE_DIR}"/*.hc_pid; do
+        [ -f "$hc_pid_file" ] || continue
+        local hc_pid
+        hc_pid=$(cat "$hc_pid_file" 2>/dev/null)
+        if [ -n "$hc_pid" ] && kill -0 "$hc_pid" 2>/dev/null; then
+            kill "$hc_pid" 2>/dev/null || true
+        fi
+    done
+
     rm -rf "$STATE_DIR" 2>/dev/null || true
     rm -f ".ralph-merge-lock" 2>/dev/null || true
 
@@ -287,8 +606,35 @@ _ensure_gitignore() {
         echo "$pattern" > .gitignore
     fi
 }
+# btb-specific directories
 _ensure_gitignore ".ralph-logs/"
 _ensure_gitignore ".ralph-worktrees/"
+_ensure_gitignore ".ralph-build-cache/"
+
+# Common build directories to prevent worktree bloat
+_ensure_gitignore "target/"
+_ensure_gitignore "build/"
+_ensure_gitignore "dist/"
+_ensure_gitignore "out/"
+_ensure_gitignore ".next/"
+_ensure_gitignore "node_modules/"
+_ensure_gitignore "__pycache__/"
+_ensure_gitignore "*.pyc"
+_ensure_gitignore ".pytest_cache/"
+_ensure_gitignore ".cargo/"
+_ensure_gitignore "*.class"
+_ensure_gitignore "bin/"
+_ensure_gitignore "obj/"
+
+# ─── Shared Build Cache ──────────────────────────────────────
+# Create a shared build cache directory so all worktrees reuse compiled
+# artifacts instead of each building from scratch (saves disk + time).
+if [ -n "${SHARED_BUILD_CACHE_DIR:-}" ]; then
+    # Resolve to absolute path relative to repo root
+    SHARED_BUILD_CACHE_DIR_ABS="$(cd "$(dirname "$SHARED_BUILD_CACHE_DIR")" 2>/dev/null && pwd)/$(basename "$SHARED_BUILD_CACHE_DIR")"
+    mkdir -p "$SHARED_BUILD_CACHE_DIR_ABS" 2>/dev/null || true
+    export SHARED_BUILD_CACHE_DIR_ABS
+fi
 
 # ─── Phase 0: Steering Docs ─────────────────────────────────
 # Check for .kiro/steering/ in the target repo. If missing, generate
@@ -323,10 +669,12 @@ DAG_JSON=""
 if [ "$FORCE_SEQUENTIAL" = true ]; then
     DAG_JSON=$(build_fallback_dag "$TASK_FILE")
 else
-    DAG_JSON=$(analyze_dependencies "$TASK_FILE" "$DESIGN_FILE" "$REQUIREMENTS_FILE") || {
-        log_warn "planner failed, falling back to sequential"
+    DAG_JSON=$(analyze_dependencies "$TASK_FILE" "$DESIGN_FILE" "$REQUIREMENTS_FILE") || true
+    # If analyze_dependencies returned empty or failed, fall back to sequential
+    if [ -z "$DAG_JSON" ] || ! echo "$DAG_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+        log_warn "planner failed or returned invalid DAG, falling back to sequential"
         DAG_JSON=$(build_fallback_dag "$TASK_FILE")
-    }
+    fi
 fi
 
 # Kill spinner and clear its line
@@ -344,6 +692,22 @@ fi
 
 WAVE_COUNT=$(get_wave_count "$DAG_JSON")
 log_info "analysis complete: ${WAVE_COUNT} execution waves"
+
+# Validate DAG completeness (informational — repair loop already ran in analyze_dependencies)
+INCOMPLETE_COUNT=$(count_incomplete_tasks "$TASK_FILE")
+DAG_TASK_COUNT=$(echo "$DAG_JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+count = 0
+for wave in data.get('waves', []):
+    count += len(wave.get('tasks', []))
+print(count)
+" 2>/dev/null)
+
+if [ "$DAG_TASK_COUNT" -lt "$INCOMPLETE_COUNT" ]; then
+    log_warn "DAG has ${DAG_TASK_COUNT} tasks but ${INCOMPLETE_COUNT} are incomplete — $(($INCOMPLETE_COUNT - $DAG_TASK_COUNT)) still missing"
+    log_warn "Execution will proceed but missing tasks won't run. Use --sequential to guarantee all tasks."
+fi
 
 echo "$DAG_JSON" | python3 -m json.tool > "${LOG_DIR}/dag_${TIMESTAMP}.json" 2>/dev/null || true
 
@@ -422,20 +786,60 @@ ALL_TASK_COUNT=0
 
 for task_id in $ALL_TASKS; do
     ALL_TASK_COUNT=$((ALL_TASK_COUNT + 1))
+done
 
-    # Store dependencies in state dir for fast lookup
-    local_deps=$(get_task_dependencies "$DAG_JSON" "$task_id")
-    echo "$local_deps" > "${STATE_DIR}/${task_id}.deps"
+# Batch-write all dependency files in a single python3 call
+echo "$DAG_JSON" | python3 -c "
+import sys, json, os
+data = json.load(sys.stdin)
+state_dir = '${STATE_DIR}'
+for wave in data.get('waves', []):
+    for task in wave.get('tasks', []):
+        tid = task['id']
+        deps = ' '.join(task.get('dependencies', []))
+        with open(os.path.join(state_dir, tid + '.deps'), 'w') as f:
+            f.write(deps)
+" 2>/dev/null || true
 
-    # Check if already complete from a previous run
-    if is_task_complete "$TASK_FILE" "$task_id"; then
-        set_task_state "$task_id" "synced"
-        tui_set_task_state "$task_id" "completed"
-        TOTAL_COMPLETED=$((TOTAL_COMPLETED + 1))
-        dbg "task ${task_id} already complete"
-    else
-        set_task_state "$task_id" "pending"
-    fi
+# Initialize all tasks as pending
+for task_id in $ALL_TASKS; do
+    set_task_state "$task_id" "pending"
+done
+
+# Batch-check completion for all tasks in a single python3 call
+# instead of spawning one python3 per task
+_completed_ids=""
+if [ -n "$ALL_TASKS" ]; then
+    _completed_ids=$(python3 - "$TASK_FILE" $ALL_TASKS <<'PYEOF'
+import re, sys
+
+task_file = sys.argv[1]
+task_ids = sys.argv[2:]
+
+with open(task_file) as f:
+    lines = f.readlines()
+
+for tid in task_ids:
+    pattern = re.compile(r'\[x\]\s+' + re.escape(tid) + r'(?:\.?\s)')
+    for line in lines:
+        m = pattern.search(line)
+        if m:
+            prefix = line[:m.start()]
+            stripped = prefix.rstrip()
+            if stripped and stripped[-1].isdigit():
+                continue
+            print(tid)
+            break
+PYEOF
+) || true
+fi
+
+# Mark completed tasks
+for task_id in $_completed_ids; do
+    set_task_state "$task_id" "synced"
+    tui_set_task_state "$task_id" "completed"
+    TOTAL_COMPLETED=$((TOTAL_COMPLETED + 1))
+    dbg "task ${task_id} already complete"
 done
 
 dbg "total tasks: ${ALL_TASK_COUNT}, already completed: ${TOTAL_COMPLETED}"
@@ -504,8 +908,8 @@ compute_ready_tasks() {
         fi
     done
     _READY_TASKS=$(echo "$_READY_TASKS" | xargs)
-    # Only log when there's something interesting (ready tasks or skips)
-    if [ -n "$_READY_TASKS" ] || [ "$_skip_count" -gt 0 ]; then
+    # Only log when tasks are newly skipped (ready tasks logged at spawn time)
+    if [ "$_skip_count" -gt 0 ]; then
         dbg "compute_ready: pending=${_pending_count} ready='${_READY_TASKS}' newly_skipped=${_skip_count}"
     fi
 }
@@ -643,7 +1047,12 @@ poll_and_sync() {
         fi
 
         # Check for stale workers — use heartbeat file (updated each iteration)
-        # instead of spawn time, so actively-working workers don't get killed
+        # instead of spawn time, so actively-working workers don't get killed.
+        #
+        # ADDITIONALLY: check for live descendant processes. Long-running builds
+        # (cargo, gradle, webpack), training scripts, and test suites may run for
+        # hours with no log output. As long as the worker's process tree has active
+        # descendants, it's not stale — something is genuinely working.
         local heartbeat_file="${STATE_DIR}/${tid}.heartbeat"
         local last_activity_file="$heartbeat_file"
         # Fall back to start time if no heartbeat exists
@@ -653,33 +1062,67 @@ poll_and_sync() {
             last_activity=$(cat "$last_activity_file")
             local idle_time=$((now - last_activity))
             if [ "$idle_time" -gt "${STALE_THRESHOLD:-300}" ]; then
-                local kill_attempts_file="${STATE_DIR}/${tid}.kill_attempts"
-                local kill_attempts=0
-                [ -f "$kill_attempts_file" ] && kill_attempts=$(cat "$kill_attempts_file")
+                # Before killing, check if the process tree has active descendants.
+                # Walk the full tree recursively — a cargo build spawned by kiro-cli
+                # is a grandchild+ process that pgrep -P (direct children only) misses.
+                local _has_descendants=false
+                local _desc_count=0
+                _desc_count=$(python3 -c "
+import subprocess, sys
+def descendants(pid):
+    try:
+        out = subprocess.check_output(['pgrep', '-P', str(pid)], stderr=subprocess.DEVNULL, text=True)
+        children = [int(p) for p in out.strip().split() if p]
+    except (subprocess.CalledProcessError, ValueError):
+        children = []
+    result = list(children)
+    for c in children:
+        result.extend(descendants(c))
+    return result
+descs = descendants(int(sys.argv[1]))
+print(len(descs))
+" "$pid" 2>/dev/null) || _desc_count=0
 
-                if [ "$kill_attempts" -ge 2 ]; then
-                    # Exhausted kill attempts — force-fail the task
-                    tui_event "✗ task ${tid} unkillable after ${kill_attempts} attempts, marking failed"
-                    set_task_state "$tid" "failed"
-                    tui_set_task_state "$tid" "failed"
-                    cleanup_worktree "$tid" "$WORKTREE_BASE"
-                    TOTAL_FAILED=$((TOTAL_FAILED + 1))
-                    rm -f "$kill_attempts_file"
-                elif [ "$kill_attempts" -ge 1 ]; then
-                    # Second attempt — escalate to SIGKILL
-                    tui_event "⚠ task ${tid} stale (idle ${idle_time}s), sending SIGKILL"
-                    kill -9 "$pid" 2>/dev/null || true
-                    echo "$((kill_attempts + 1))" > "$kill_attempts_file"
-                    sleep 1
-                else
-                    # First attempt — graceful kill
-                    tui_event "⚠ task ${tid} stale (idle ${idle_time}s), killing"
-                    kill_tree "$pid" 2>/dev/null || true
-                    echo "$((kill_attempts + 1))" > "$kill_attempts_file"
-                    sleep 1
+                if [ "$_desc_count" -gt 0 ]; then
+                    _has_descendants=true
+                    # Descendant processes are alive — refresh heartbeat, not stale
+                    echo "$(date +%s)" > "$heartbeat_file"
+                    dbg "task ${tid} idle ${idle_time}s but has ${_desc_count} descendant process(es) — refreshing heartbeat"
+                fi
+
+                if [ "$_has_descendants" = false ]; then
+                    local kill_attempts_file="${STATE_DIR}/${tid}.kill_attempts"
+                    local kill_attempts=0
+                    [ -f "$kill_attempts_file" ] && kill_attempts=$(cat "$kill_attempts_file")
+
+                    if [ "$kill_attempts" -ge 2 ]; then
+                        # Exhausted kill attempts — force-fail the task
+                        tui_event "✗ task ${tid} unkillable after ${kill_attempts} attempts, marking failed"
+                        set_task_state "$tid" "failed"
+                        tui_set_task_state "$tid" "failed"
+                        cleanup_worktree "$tid" "$WORKTREE_BASE"
+                        TOTAL_FAILED=$((TOTAL_FAILED + 1))
+                        rm -f "$kill_attempts_file"
+                    elif [ "$kill_attempts" -ge 1 ]; then
+                        # Second attempt — escalate to SIGKILL
+                        tui_event "⚠ task ${tid} stale (idle ${idle_time}s, 0 descendants), sending SIGKILL"
+                        kill -9 "$pid" 2>/dev/null || true
+                        echo "$((kill_attempts + 1))" > "$kill_attempts_file"
+                        sleep 1
+                    else
+                        # First attempt — graceful kill
+                        tui_event "⚠ task ${tid} stale (idle ${idle_time}s, 0 descendants), killing"
+                        kill_tree "$pid" 2>/dev/null || true
+                        echo "$((kill_attempts + 1))" > "$kill_attempts_file"
+                        sleep 1
+                    fi
                 fi
             fi
         fi
+
+        # LLM health check — wall-clock based, runs alongside stale detection
+        maybe_start_health_check "$tid"
+        process_health_check_result "$tid"
     done
 
     # Return value without subshell — caller reads this directly
@@ -730,15 +1173,10 @@ while true; do
 
     # 4. Find ready tasks and spawn workers for them
     compute_ready_tasks
-    # Only log step4 when there's something to spawn
-    if [ -n "$_READY_TASKS" ]; then
-        dbg "step4: _READY_TASKS='${_READY_TASKS}' running=$(count_running) WORKER_SLOTS=${WORKER_SLOTS}"
-    fi
     for task_id in $_READY_TASKS; do
         # Respect WORKER_SLOTS (MAX_PARALLEL minus reserved review slots)
         running_count=$(count_running)
         if [ "$running_count" -ge "$WORKER_SLOTS" ]; then
-            dbg "step4: at capacity (${running_count}/${WORKER_SLOTS}), deferring remaining"
             break
         fi
 
@@ -815,6 +1253,11 @@ while true; do
             _REVIEW_DEFERRALS=0
             TUI_PHASE="executing"
             dbg "review cleanup done, resuming scheduler"
+
+            # Re-compute ready tasks after review — the forced-wait loop may have
+            # synced tasks that satisfy dependencies for other tasks
+            compute_ready_tasks
+            dbg "post-review compute_ready: _READY_TASKS='${_READY_TASKS}'"
         else
             # Workers still running and not yet forced — defer review
             _REVIEW_DEFERRALS=$((_REVIEW_DEFERRALS + 1))
@@ -842,7 +1285,7 @@ while true; do
         dbg "DEADLOCK: remaining=${local_remaining_now} running=false ready='${_READY_TASKS}'"
         # Dump every task's state and deps for post-mortem
         for task_id in $ALL_TASKS; do
-            local _ds _dd
+            _ds="" _dd=""
             _ds=$(get_task_state "$task_id")
             _dd=$(cat "${STATE_DIR}/${task_id}.deps" 2>/dev/null || echo "none")
             [ "$_ds" = "synced" ] || [ "$_ds" = "failed" ] || [ "$_ds" = "skipped" ] || \

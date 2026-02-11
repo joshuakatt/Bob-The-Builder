@@ -4,6 +4,24 @@ Concurrent task orchestrator for [Kiro](https://kiro.dev) specs. Takes a spec wi
 
 Each task gets its own worktree and agent process. A planner assigns models per task, a reviewer audits completed work, and everything syncs back to your main branch automatically.
 
+## Quick Start
+
+```bash
+# 1. Clone btb anywhere
+git clone <btb-repo-url> ~/btb
+
+# 2. cd into your project
+cd ~/my-project
+
+# 3. Run setup (validates prereqs, installs agents)
+~/btb/setup.sh
+
+# 4. Run btb on a spec
+~/btb/btb.sh my-feature
+```
+
+That's it. btb lives in its own directory and operates on whatever repo you're in.
+
 ## Prerequisites
 
 - **kiro-cli** — installed and authenticated
@@ -106,13 +124,29 @@ The reviewer audits completed work against the spec after every batch of synced 
 
 ### Retry and Safety
 
-| Setting            | Default | Description                                   |
-| ------------------ | ------- | --------------------------------------------- |
-| `MAX_RETRIES`      | `10`    | Retries per task on failure                   |
-| `STALE_THRESHOLD`  | `600`   | Seconds of inactivity before killing a worker |
-| `RATE_LIMIT_PAUSE` | `3`     | Seconds between spawning workers              |
+| Setting                   | Default | Description                                   |
+| ------------------------- | ------- | --------------------------------------------- |
+| `MAX_RETRIES`             | `10`    | Retries per task on failure                   |
+| `MAX_DAG_REPAIR_ATTEMPTS` | `3`     | Planner re-prompts to patch missing DAG tasks |
+| `STALE_THRESHOLD`         | `600`   | Seconds of inactivity before killing a worker |
+| `RATE_LIMIT_PAUSE`        | `3`     | Seconds between spawning workers              |
 
-The stale threshold is activity-based, not wall-clock. A worker is considered active if its log file is growing, it has child processes running (e.g. a long test suite), or the process is alive. Tasks can run for hours as long as something is happening.
+The stale threshold is activity-based, not wall-clock. A worker is considered active if its log file is growing, it has descendant processes running anywhere in its process tree (e.g. a long build, test suite, or training script), or the process is alive. Tasks can run for hours as long as something is happening — even deeply nested child processes like `rustc` invoked by `cargo` invoked by `kiro-cli` are detected.
+
+### Shared Build Cache
+
+| Setting                  | Default                 | Description                                          |
+| ------------------------ | ----------------------- | ---------------------------------------------------- |
+| `SHARED_BUILD_CACHE_DIR` | `../.ralph-build-cache` | Shared build artifact directory across all worktrees |
+
+When running parallel tasks, each git worktree would normally get its own build artifacts (Rust `target/`, Go cache, Gradle home, etc.). For large projects this can consume tens of GB and fill the disk. The shared build cache redirects these via environment variables:
+
+- `CARGO_TARGET_DIR` — Rust builds share one `target/` directory
+- `GRADLE_USER_HOME` — Gradle builds share one cache
+- `GOPATH` / `GOCACHE` — Go builds share one cache
+- `PIP_CACHE_DIR` — Python pip downloads share one cache
+
+Set `SHARED_BUILD_CACHE_DIR=""` to disable this behavior.
 
 When a task fails and retries, the failure context (last 30 lines of output, exit code, failure type) is injected into the retry prompt so the agent can learn from the previous attempt.
 
@@ -137,7 +171,47 @@ All logs go to `.ralph-logs/` in your repo:
 - `debug_<timestamp>.log` — orchestrator debug log (scheduler decisions, spawn/sync events)
 - `task_<id>_<timestamp>.log` — per-task agent output (full kiro-cli conversation)
 - `dag_<timestamp>.json` — the dependency DAG produced by the planner
+- `dag_validation_<timestamp>.log` — diagnostic info when DAG validation fails (shows missing tasks)
 - `steering_<timestamp>.log` — steering doc generation output
+
+## DAG Validation
+
+The planner analyzes your tasks and builds a dependency graph. For large specs (100+ tasks), the planner might miss some tasks due to context window limitations or misunderstanding the structure.
+
+**Automatic repair:** When the planner misses tasks, btb automatically detects the gap and asks the planner to produce a patch DAG for just the missing tasks. This repair loop runs up to `MAX_DAG_REPAIR_ATTEMPTS` times (default: 3). If tasks are still missing after all attempts, they're appended as sequential fallback waves so no task is ever lost.
+
+The repair flow:
+
+1. Initial DAG analysis
+2. Compare DAG task count against incomplete tasks in `tasks.md`
+3. If tasks are missing → ask planner to produce a patch for only the missing ones
+4. Merge patch into existing DAG
+5. Repeat until complete or max attempts reached
+6. Any remaining stragglers get appended as sequential waves
+
+**Manual validation** with the included script:
+
+```sh
+./validate-dag.sh my-feature
+# or with a specific DAG file
+./validate-dag.sh my-feature .ralph-logs/dag_20250208_143022.json
+```
+
+This shows exactly which tasks are missing from the DAG.
+
+**If you still see issues:**
+
+1. **Use sequential mode** — bypasses DAG analysis entirely:
+
+   ```sh
+   ./btb.sh my-feature --sequential
+   ```
+
+2. **Break into phases** — split large specs into smaller ones
+
+3. **Check formatting** — ensure all tasks use standard `- [ ]` syntax
+
+4. **Review the DAG** — check `.ralph-logs/dag_<timestamp>.json` to see what the planner understood
 
 ## Cleanup
 

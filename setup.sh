@@ -115,8 +115,25 @@ _ensure_gitignore() {
         echo "$pattern" > .gitignore
     fi
 }
+# btb-specific directories
 _ensure_gitignore ".ralph-logs/"
 _ensure_gitignore ".ralph-worktrees/"
+_ensure_gitignore ".ralph-build-cache/"
+
+# Common build directories to prevent worktree bloat
+_ensure_gitignore "target/"
+_ensure_gitignore "build/"
+_ensure_gitignore "dist/"
+_ensure_gitignore "out/"
+_ensure_gitignore ".next/"
+_ensure_gitignore "node_modules/"
+_ensure_gitignore "__pycache__/"
+_ensure_gitignore "*.pyc"
+_ensure_gitignore ".pytest_cache/"
+_ensure_gitignore ".cargo/"
+_ensure_gitignore "*.class"
+_ensure_gitignore "bin/"
+_ensure_gitignore "obj/"
 echo -e "  \033[37m✓\033[0m  .gitignore updated"
 
 # ─── Detect specs ────────────────────────────────────────────

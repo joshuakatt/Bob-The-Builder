@@ -75,7 +75,11 @@ review_wave() {
     local changed_files
     changed_files=$(git diff --name-only "$diff_ref" HEAD 2>/dev/null || echo "")
     local changed_source
-    changed_source=$(echo "$changed_files" | awk '/\.(ts|js|py|tsx|jsx|json|md)$/' | head -30)
+    changed_source=$(echo "$changed_files" | awk '/\.(ts|js|py|tsx|jsx|json|md|sh|bash|rs|toml|yaml|yml|css|html|vue|svelte|go|rb|java|kt|swift|c|cpp|h)$/' | head -40)
+
+    # Track review/fix history across attempts so the reviewer has full context
+    # on re-reviews after fixes. Each entry: "ATTEMPT N: REJECTED: ... → FIX: ..."
+    local review_fix_history=""
 
     for ((attempt=1; attempt<=max_retries; attempt++)); do
         tui_event "🔍 reviewing wave ${wave_label} (attempt ${attempt}/${max_retries})"
@@ -86,12 +90,25 @@ review_wave() {
             steering_hint="You have project context in .kiro/steering/ — read those files first for architecture, conventions, and spec summary."
         fi
 
+        # Build history context for re-review attempts
+        local history_section=""
+        if [ -n "$review_fix_history" ]; then
+            history_section="
+PREVIOUS REVIEW/FIX HISTORY:
+This is re-review attempt ${attempt}. Here is what happened in previous rounds:
+${review_fix_history}
+IMPORTANT: Focus on whether the previously identified issues have been ACTUALLY FIXED.
+If they have, and no new issues are found, output AUDIT_PASSED.
+Do NOT re-raise issues that have already been addressed."
+        fi
+
         local review_prompt
         review_prompt="WAVE ${wave_label} QUALITY REVIEW
 
 You are auditing work that was just completed. Review it against the spec.
 
 ${steering_hint}
+${history_section}
 
 SPEC FILES TO READ:
 - ${spec_dir}/design.md (architecture and interfaces)
@@ -109,9 +126,10 @@ REVIEW CHECKLIST:
 2. Check that implementations are complete (no TODOs, no placeholders, no stub functions)
 3. Verify type safety — interfaces used correctly, no 'any' types unless justified
 4. Check that imports/exports are correct and files reference each other properly
-5. If test files were created, run them: npm test or npx jest
+5. If test files were created, run them
 6. Verify tasks.md was updated — completed tasks should be marked [x]
 7. Check for obvious bugs, missing error handling, or security issues
+8. If you need to understand how changed code integrates with the rest of the codebase, explore related files freely — you have full access to the entire repository
 
 OUTPUT FORMAT:
 - If everything passes: output exactly 'AUDIT_PASSED'
@@ -148,12 +166,22 @@ Be thorough but pragmatic. Flag real problems, not style preferences."
         if [ "$attempt" -lt "$max_retries" ]; then
             tui_event "🔧 fixing wave ${wave_label} issues..."
 
+            # Include history so the fixer knows what was already tried
+            local fixer_history_section=""
+            if [ -n "$review_fix_history" ]; then
+                fixer_history_section="
+PREVIOUS FIX ATTEMPTS:
+${review_fix_history}
+Do NOT repeat fixes that already failed. Try a different approach if the same issue persists."
+            fi
+
             local fix_prompt
             fix_prompt="CODE REVIEW FIX REQUEST
 
 The reviewer found issues with the recent implementation. Fix them.
 
 ${steering_hint}
+${fixer_history_section}
 
 REJECTION DETAILS:
 ${rejection_reason}
@@ -169,7 +197,7 @@ ${changed_source:-Check all source files}
 INSTRUCTIONS:
 1. Read the rejection details carefully
 2. Read each file mentioned and fix the specific issues
-3. If tests need to be fixed or run, do so: npm test or npx jest
+3. If tests need to be fixed or run, do so
 4. Verify your fixes resolve ALL the listed issues
 5. Do NOT modify tasks.md unless the reviewer specifically flagged it
 6. Output 'FIXES_APPLIED' when done"
@@ -187,15 +215,39 @@ INSTRUCTIONS:
             git add --all -- ':!.ralph-logs' >/dev/null 2>&1 || true
             git commit -m "Wave ${wave_label} review fix (attempt ${attempt})" --allow-empty >/dev/null 2>&1 || true
 
+            # Extract what the fixer claimed to do (first 20 lines after FIXES_APPLIED or last 20 lines)
+            local fix_summary=""
+            fix_summary=$(echo "$fix_response" | awk '/FIXES_APPLIED/ { found=1; next } found { print }' | head -20)
+            if [ -z "$fix_summary" ]; then
+                # Fixer didn't output FIXES_APPLIED — grab the tail as summary
+                fix_summary=$(echo "$fix_response" | tail -20 | head -20)
+            fi
+
             if echo "$fix_response" | awk '/FIXES_APPLIED/ { found=1 } END { exit !found }' 2>/dev/null; then
                 tui_event "✓ fixes applied for wave ${wave_label}, re-reviewing..."
             else
                 tui_event "⚠ fixer did not confirm fixes, re-reviewing anyway..."
+                fix_summary="(fixer did not confirm completion) ${fix_summary}"
             fi
+
+            # Append to history for the next review/fix iteration
+            # Truncate to avoid unbounded prompt growth
+            local history_entry=""
+            history_entry="--- ROUND ${attempt} ---
+REJECTED: $(echo "$rejection_reason" | head -15)
+FIX ATTEMPTED: $(echo "$fix_summary" | head -15)
+"
+            review_fix_history="${review_fix_history}${history_entry}"
 
             # Update changed_files for the next review iteration
             changed_files=$(git diff --name-only "$diff_ref" HEAD 2>/dev/null || echo "")
-            changed_source=$(echo "$changed_files" | awk '/\.(ts|js|py|tsx|jsx|json|md)$/' | head -30)
+            changed_source=$(echo "$changed_files" | awk '/\.(ts|js|py|tsx|jsx|json|md|sh|bash|rs|toml|yaml|yml|css|html|vue|svelte|go|rb|java|kt|swift|c|cpp|h)$/' | head -40)
+        else
+            # Last attempt rejected, no more fixes — append rejection to history for logging
+            review_fix_history="${review_fix_history}--- ROUND ${attempt} (FINAL) ---
+REJECTED: $(echo "$rejection_reason" | head -15)
+(no more fix attempts)
+"
         fi
     done
 

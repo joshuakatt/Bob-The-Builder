@@ -953,6 +953,19 @@ tui_render() {
     # still be the buffer overrides (writing to a dead $_buf). Restore the
     # real implementations before doing anything else.
     unset -f tui_line tui_hr 2>/dev/null || true
+    tui_line() {
+        local content="$1" row="$2"
+        tui_goto "$row" 1
+        printf '%b' "$content"
+        tui_clreol
+    }
+    tui_hr() {
+        local row="$1" char="${2:-─}" style="${3:-$_DIM$_GRAY}"
+        tui_goto "$row" 1
+        printf '%b' "$style"
+        printf '%*s' "$TERM_COLS" '' | tr ' ' "$char"
+        printf '%b' "$_RST"
+    }
 
     # Throttle: max 1 render per second to avoid flicker
     local now
@@ -1054,8 +1067,22 @@ tui_render() {
     # Footer
     _buf+="$(printf '\033[%d;1H' "$TERM_ROWS")$(printf '%b' "  ${_DIM}${_GRAY}↑↓ select worker  ctrl-c abort${_RST}")$(printf '\033[K')"
 
-    # Restore real tui_line / tui_hr for non-render callers
-    unset -f tui_line tui_hr
+    # Restore real tui_line / tui_hr — unset removes the override AND the original,
+    # so we must redefine them explicitly.
+    unset -f tui_line tui_hr 2>/dev/null || true
+    tui_line() {
+        local content="$1" row="$2"
+        tui_goto "$row" 1
+        printf '%b' "$content"
+        tui_clreol
+    }
+    tui_hr() {
+        local row="$1" char="${2:-─}" style="${3:-$_DIM$_GRAY}"
+        tui_goto "$row" 1
+        printf '%b' "$style"
+        printf '%*s' "$TERM_COLS" '' | tr ' ' "$char"
+        printf '%b' "$_RST"
+    }
 
     # Flush entire frame in one write
     printf '%s' "$_buf"
@@ -1104,14 +1131,53 @@ print(f'TUI_TOTAL_TASKS={len(task_ids)}')
 " 2>&1)" || true
 
     for ((i=0; i<${#TUI_TASK_IDS[@]}; i++)); do
-        local tid="${TUI_TASK_IDS[$i]}"
-        if is_task_complete "$task_file" "$tid" 2>/dev/null; then
-            TUI_TASK_STATES+=("completed")
-        else
-            TUI_TASK_STATES+=("pending")
-        fi
         TUI_TASK_LOGS+=("")
     done
+
+    # Batch-check completion for ALL tasks in a single python3 call
+    # instead of spawning one python3 per task (which is 100x slower)
+    local _completed_set=""
+    if [ "${#TUI_TASK_IDS[@]}" -gt 0 ]; then
+        _completed_set=$(python3 - "$task_file" "${TUI_TASK_IDS[@]}" <<'PYEOF'
+import re, sys
+
+task_file = sys.argv[1]
+task_ids = sys.argv[2:]
+
+with open(task_file) as f:
+    lines = f.readlines()
+
+completed = set()
+for tid in task_ids:
+    pattern = re.compile(r'\[x\]\s+' + re.escape(tid) + r'(?:\.?\s)')
+    for line in lines:
+        m = pattern.search(line)
+        if m:
+            prefix = line[:m.start()]
+            stripped = prefix.rstrip()
+            if stripped and stripped[-1].isdigit():
+                continue
+            completed.add(tid)
+            break
+
+for tid in task_ids:
+    print("completed" if tid in completed else "pending")
+PYEOF
+) || true
+    fi
+
+    # Parse the batch result into TUI_TASK_STATES
+    local _idx=0
+    while IFS= read -r _state; do
+        TUI_TASK_STATES+=("$_state")
+        _idx=$((_idx + 1))
+    done <<< "$_completed_set"
+
+    # Fill any missing states (if python failed)
+    while [ "${#TUI_TASK_STATES[@]}" -lt "${#TUI_TASK_IDS[@]}" ]; do
+        TUI_TASK_STATES+=("pending")
+    done
+
     eval "$_prev_opts" 2>/dev/null
 }
 
