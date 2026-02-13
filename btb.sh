@@ -365,6 +365,62 @@ for d in descendants(int(sys.argv[1])):
     except: pass
 " "$pid" 2>/dev/null || echo "  (unable to enumerate)")
 
+    # Analyze tool-call repetition patterns in the full log.
+    # This detects "verification loops" where the agent keeps running
+    # similar commands (e.g. cargo test with different filters) without
+    # making forward progress toward marking the task complete.
+    local repetition_analysis=""
+    if [ -n "$task_log" ] && [ -f "$task_log" ]; then
+        repetition_analysis=$(python3 -c "
+import re, sys, collections
+
+log_file = sys.argv[1]
+with open(log_file, 'r', errors='replace') as f:
+    lines = f.readlines()
+
+# Extract shell commands (the most common loop pattern)
+shell_cmds = []
+for line in lines:
+    m = re.search(r'I will run the following command: (.+?) \(using tool: shell\)', line)
+    if m:
+        shell_cmds.append(m.group(1).strip())
+
+if not shell_cmds:
+    sys.exit(0)
+
+# Normalize commands: strip timeout wrappers, collapse whitespace
+def normalize(cmd):
+    cmd = re.sub(r'^timeout \d+ ', '', cmd)
+    cmd = re.sub(r'\s+', ' ', cmd).strip()
+    # Collapse specific test filter args to detect 'same intent' commands
+    cmd = re.sub(r'(cargo test[^|]*?)--test property_tests[^|]*', r'\1--test property_tests <filters>', cmd)
+    cmd = re.sub(r'(cargo test[^|]*?)-- [^|]+', r'\1-- <filters>', cmd)
+    return cmd
+
+normalized = [normalize(c) for c in shell_cmds]
+counts = collections.Counter(normalized)
+
+# Find commands repeated 3+ times
+repeated = [(cmd, cnt) for cmd, cnt in counts.most_common(10) if cnt >= 3]
+if not repeated:
+    sys.exit(0)
+
+total_cmds = len(shell_cmds)
+total_repeated = sum(cnt for _, cnt in repeated)
+
+print(f'Total shell commands: {total_cmds}')
+print(f'Commands repeated 3+ times: {total_repeated}/{total_cmds} ({100*total_repeated//total_cmds}%)')
+print()
+for cmd, cnt in repeated:
+    print(f'  {cnt}x: {cmd[:120]}')
+
+# Check if the task was ever marked complete
+has_complete = any('TASK_COMPLETE' in line for line in lines[-50:])
+print()
+print(f'Task marked complete in last 50 lines: {\"YES\" if has_complete else \"NO\"}')
+" "$task_log" 2>/dev/null) || true
+    fi
+
     cat <<EOF
 TASK HEALTH CHECK REQUEST
 =========================
@@ -376,6 +432,9 @@ Elapsed Runtime: ${elapsed} seconds ($((elapsed / 60)) minutes)
 
 DESCENDANT PROCESSES:
 ${descendants:-  (none)}
+
+REPETITIVE COMMAND ANALYSIS:
+${repetition_analysis:-  (no repetitive patterns detected)}
 
 LAST ${HEALTH_CHECK_LOG_LINES} LINES OF TASK LOG:
 ${log_tail}
@@ -1123,6 +1182,29 @@ print(len(descs))
         # LLM health check — wall-clock based, runs alongside stale detection
         maybe_start_health_check "$tid"
         process_health_check_result "$tid"
+
+        # Hard wall-clock timeout — safety net for verification loops where
+        # the agent stays "active" (producing output, spawning processes) but
+        # never converges toward marking the task complete. This is separate
+        # from stale detection (which only catches inactivity) and the LLM
+        # health check (which can misjudge active-but-unproductive workers).
+        if [ "${JOB_TIMEOUT:-0}" -gt 0 ]; then
+            local started_at=$(cat "${STATE_DIR}/${tid}.started" 2>/dev/null || echo "$now")
+            local wall_elapsed=$((now - started_at))
+            if [ "$wall_elapsed" -gt "${JOB_TIMEOUT}" ]; then
+                dbg "JOB_TIMEOUT: task ${tid} exceeded ${JOB_TIMEOUT}s wall-clock (elapsed=${wall_elapsed}s) — killing"
+                tui_event "⏰ task ${tid} hit wall-clock timeout (${wall_elapsed}s > ${JOB_TIMEOUT}s), killing"
+                kill_tree "$pid" 2>/dev/null || true
+                # Save failure context so retry knows it was a timeout
+                local _timeout_ctx="${STATE_DIR}/${tid}.fail_context"
+                {
+                    echo "FAILURE_TYPE=wall_clock_timeout"
+                    echo "ELAPSED=${wall_elapsed}s"
+                    echo "HINT=The previous attempt was killed after exceeding the ${JOB_TIMEOUT}s wall-clock timeout. The agent was still active but never marked the task complete. It likely got stuck in a verification loop — re-running tests or checks repeatedly instead of concluding. On this retry: once your implementation is done and tests pass, IMMEDIATELY mark the task complete and output the completion signal. Do NOT re-verify passing tests."
+                } > "$_timeout_ctx"
+                sleep 1
+            fi
+        fi
     done
 
     # Return value without subshell — caller reads this directly

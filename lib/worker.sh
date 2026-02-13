@@ -153,7 +153,16 @@ RULES:
 - After implementation, verify your work compiles/runs correctly.
 - When editing files, always read the file first to understand its full content. If a string replacement fails because of ambiguity, use a more specific match string with additional context lines, or rewrite the section differently.
 - Update ${TASK_FILE} to mark task ${TASK_ID} as complete: change '- [ ] ${TASK_ID}' to '- [x] ${TASK_ID}'
-- Output '${TASK_COMPLETE_PREFIX:-TASK_COMPLETE}::${TASK_ID}' when the task is done and verified."
+- Output '${TASK_COMPLETE_PREFIX:-TASK_COMPLETE}::${TASK_ID}' when the task is done and verified.
+
+CRITICAL — AVOID VERIFICATION LOOPS:
+Running multiple DIFFERENT verifications is fine (e.g. unit tests, then integration tests, then a build check).
+What you must NOT do is re-verify the SAME thing you already confirmed:
+- If a test passed, do not re-run it with different filter flags or grep for its name in the output.
+- If 'cargo test --test X' showed your tests passing, do not then run 'cargo test --test X --list | grep ...' to confirm they exist.
+- If you saw '5 passed; 0 failed' in the output, that is sufficient — do not run the suite again.
+- Never run the same command more than twice. If it worked once, trust the result.
+Once all your verifications pass, mark the task complete in ${TASK_FILE} and output the completion signal. Do not add extra confirmation steps."
 
     # Run the agent with fresh context (core Ralph principle)
     # Use tee to stream output to log file in real-time so TUI can tail it

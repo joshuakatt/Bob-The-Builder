@@ -75,10 +75,14 @@ STALE_THRESHOLD=${STALE_THRESHOLD:-600}   # Seconds of inactivity before a worke
                                           # "Activity" = log output, descendant processes, or CPU usage.
                                           # Set high enough for long builds/tests (10 min default).
                                           # NOTE: LLM health check (below) is a separate wall-clock-based mechanism.
+JOB_TIMEOUT=${JOB_TIMEOUT:-43200}         # Hard wall-clock timeout per task (seconds, 0=disabled)
+                                          # Kills worker regardless of activity after this many seconds.
+                                          # Safety net for verification loops where the agent stays
+                                          # "active" but never converges. Default 2 hours.
 
 # ─── LLM Health Check ───────────────────────────────────────
 HEALTH_CHECK_ENABLED=${HEALTH_CHECK_ENABLED:-true}
-HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-3600}    # Seconds before first check
+HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-1800}    # Seconds between health checks (30 min)
 HEALTH_CHECK_MODEL=${HEALTH_CHECK_MODEL:-claude-sonnet-4.5}
 HEALTH_CHECK_LOG_LINES=${HEALTH_CHECK_LOG_LINES:-50}    # Log lines in context
 
