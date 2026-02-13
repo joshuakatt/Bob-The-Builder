@@ -388,7 +388,7 @@ def create_app(config: Config) -> web.Application:
         jobs_dir=config.jobs_dir,
         lock_file=lock_file,
     )
-    pusher = ResultPusher()
+    pusher = ResultPusher(btb_path=config.btb_path)
     executor = JobExecutor(
         btb_path=config.btb_path,
         jobs_dir=config.jobs_dir,
@@ -396,6 +396,7 @@ def create_app(config: Config) -> web.Application:
         pusher=pusher,
         queue=queue,
         job_timeout=config.job_timeout,
+        github_token=config.github_token,
     )
     streamer_manager = TUIStreamerManager()
 

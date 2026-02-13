@@ -58,7 +58,7 @@ class Job:
     repository containing a .btb file. It tracks the full lifecycle from
     submission through execution, result push-back, and cleanup.
 
-    Job statuses: "pending", "running", "completed", "failed", "timeout"
+    Job statuses: "pending", "running", "completed", "failed", "timeout", "stopped"
     """
     id: str                        # UUID
     repo_url: str                  # GitHub clone URL
@@ -66,7 +66,7 @@ class Job:
     commit_sha: str                # Commit SHA
     pusher: str                    # GitHub username of pusher
     spec_name: str                 # Spec to run (read from .btb file)
-    status: str                    # "pending" | "running" | "completed" | "failed" | "timeout"
+    status: str                    # "pending" | "running" | "completed" | "failed" | "timeout" | "stopped"
     submitted_at: str              # ISO 8601 timestamp
     started_at: Optional[str]      # ISO 8601 timestamp
     completed_at: Optional[str]    # ISO 8601 timestamp
@@ -77,6 +77,8 @@ class Job:
     push_error: Optional[str]      # Error message if push failed
     cleanup_success: Optional[bool]  # Whether working dir cleanup succeeded
     retry_of: Optional[str]        # Job ID of the original job if this is a retry
+    stopped_at: Optional[str] = None  # ISO 8601 timestamp when stopped
+    preserve_workdir: bool = False    # If True, don't cleanup workdir on stop
 
     def to_json(self) -> str:
         """Serialize this Job to a JSON string.
@@ -119,4 +121,6 @@ class Job:
             push_error=data.get("push_error"),
             cleanup_success=data.get("cleanup_success"),
             retry_of=data.get("retry_of"),
+            stopped_at=data.get("stopped_at"),
+            preserve_workdir=data.get("preserve_workdir", False),
         )

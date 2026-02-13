@@ -334,3 +334,100 @@ class JobQueue:
                 pass
 
         return None
+
+    def get_stopped(self, limit: int = 20) -> list[Job]:
+        """Get stopped jobs that still have preserved working directories.
+
+        Args:
+            limit: Maximum number of stopped jobs to return.
+
+        Returns:
+            List of stopped Jobs, most recent first.
+        """
+        stopped: list[Job] = []
+        for filepath in self._sorted_queue_files():
+            if len(stopped) >= limit:
+                break
+            try:
+                job = self._read_job_file(filepath)
+            except Exception:
+                continue
+            if job.status == "stopped":
+                stopped.append(job)
+        return stopped
+
+    def update_job(self, job_id: str, **updates) -> Optional[Job]:
+        """Update a job's fields in place.
+
+        Args:
+            job_id: The job ID to update.
+            **updates: Field names and values to update.
+
+        Returns:
+            The updated Job, or None if not found.
+        """
+        filepath = self._find_job_file_in_queue(job_id)
+        if filepath is None:
+            filepath = self._find_job_file_in_completed(job_id)
+        if filepath is None:
+            return None
+
+        try:
+            job = self._read_job_file(filepath)
+            for key, value in updates.items():
+                if hasattr(job, key):
+                    setattr(job, key, value)
+            self._write_job_file(filepath, job)
+            return job
+        except Exception:
+            return None
+
+    def delete_job(self, job_id: str) -> bool:
+        """Delete a job from the queue or completed directory.
+
+        Args:
+            job_id: The job ID to delete.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        filepath = self._find_job_file_in_queue(job_id)
+        if filepath is None:
+            filepath = self._find_job_file_in_completed(job_id)
+        if filepath is None:
+            return False
+
+        try:
+            filepath.unlink()
+            logger.info("Deleted job %s", job_id)
+            return True
+        except Exception:
+            return False
+
+    def move_to_queue(self, job_id: str) -> bool:
+        """Move a job from completed back to queue (for resume).
+
+        Args:
+            job_id: The job ID to move.
+
+        Returns:
+            True if moved, False if not found or already in queue.
+        """
+        # Check if already in queue
+        if self._find_job_file_in_queue(job_id) is not None:
+            return False
+
+        filepath = self._find_job_file_in_completed(job_id)
+        if filepath is None:
+            return False
+
+        try:
+            job = self._read_job_file(filepath)
+            # Move to queue directory
+            dest = self.queue_dir / filepath.name
+            self._write_job_file(dest, job)
+            filepath.unlink()
+            logger.info("Moved job %s back to queue", job_id)
+            return True
+        except Exception:
+            return False

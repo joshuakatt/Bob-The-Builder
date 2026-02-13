@@ -3,123 +3,401 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BTB Dashboard</title>
+<title>btb</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
 <style>
   :root {
-    --bg: #0d1117;
-    --surface: #161b22;
-    --border: #30363d;
-    --text: #c9d1d9;
-    --text-muted: #8b949e;
-    --accent: #58a6ff;
+    --bg: #0a0e14;
+    --bg-elevated: #0d1219;
+    --surface: #131a24;
+    --surface-hover: #1a2332;
+    --border: #1e2a3a;
+    --border-accent: #2d3f54;
+    --text: #e6edf3;
+    --text-secondary: #9eaab8;
+    --text-muted: #5c6b7a;
+    --cyan: #39c5cf;
+    --cyan-dim: #2a8f96;
+    --cyan-glow: rgba(57, 197, 207, 0.15);
     --green: #3fb950;
+    --green-dim: #2d8a3c;
+    --green-glow: rgba(63, 185, 80, 0.12);
+    --yellow: #d4a72c;
+    --yellow-dim: #9a7a20;
+    --yellow-glow: rgba(212, 167, 44, 0.12);
     --red: #f85149;
-    --yellow: #d29922;
+    --red-dim: #b33a34;
+    --red-glow: rgba(248, 81, 73, 0.12);
     --orange: #db6d28;
+    --orange-glow: rgba(219, 109, 40, 0.12);
+    --magenta: #bc8cff;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--bg);
     color: var(--text);
     line-height: 1.5;
+    font-size: 14px;
+    min-height: 100vh;
   }
+
+  /* Header */
   header {
-    background: var(--surface);
+    background: linear-gradient(180deg, var(--surface) 0%, var(--bg-elevated) 100%);
     border-bottom: 1px solid var(--border);
-    padding: 16px 24px;
+    padding: 16px 32px;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
   }
-  header h1 { font-size: 20px; font-weight: 600; }
-  header .status { font-size: 13px; color: var(--text-muted); }
-  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
-  .section { margin-bottom: 32px; }
-  .section h2 {
-    font-size: 16px;
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .logo-mark {
+    width: 32px;
+    height: 32px;
+    background: linear-gradient(135deg, var(--cyan) 0%, var(--cyan-dim) 100%);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--bg);
+    box-shadow: 0 0 20px var(--cyan-glow), inset 0 1px 0 rgba(255,255,255,0.2);
+  }
+  .logo-text {
+    font-size: 18px;
     font-weight: 600;
+    letter-spacing: -0.5px;
+    color: var(--text);
+  }
+  .logo-text span {
     color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 12px;
+    font-weight: 400;
+    margin-left: 4px;
+  }
+  .header-status {
     display: flex;
     align-items: center;
     gap: 8px;
-  }
-  .section h2 .count {
-    background: var(--border);
-    color: var(--text);
     font-size: 12px;
-    padding: 2px 8px;
-    border-radius: 10px;
+    color: var(--text-muted);
+    background: var(--bg);
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
   }
-  .empty { color: var(--text-muted); font-style: italic; padding: 16px 0; }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--green); }
+    50% { opacity: 0.6; box-shadow: 0 0 4px var(--green); }
+  }
+
+  /* Container */
+  .container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 32px;
+  }
+
+  /* Stats Grid */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 40px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    position: relative;
+    overflow: hidden;
+  }
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+  }
+  .stat-card.running::before {
+    background: linear-gradient(90deg, var(--cyan), var(--cyan-dim));
+    box-shadow: 0 0 20px var(--cyan-glow);
+  }
+  .stat-card.queued::before {
+    background: linear-gradient(90deg, var(--yellow), var(--yellow-dim));
+    box-shadow: 0 0 20px var(--yellow-glow);
+  }
+  .stat-card.completed::before {
+    background: linear-gradient(90deg, var(--green), var(--green-dim));
+    box-shadow: 0 0 20px var(--green-glow);
+  }
+  .stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+  .stat-value {
+    font-size: 36px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .stat-card.running .stat-value { color: var(--cyan); }
+  .stat-card.queued .stat-value { color: var(--yellow); }
+  .stat-card.completed .stat-value { color: var(--green); }
+
+  /* Sections */
+  .section {
+    margin-bottom: 40px;
+  }
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-indicator {
+    width: 4px;
+    height: 20px;
+    border-radius: 2px;
+  }
+  .section.running-section .section-indicator { background: var(--cyan); box-shadow: 0 0 10px var(--cyan-glow); }
+  .section.pending-section .section-indicator { background: var(--yellow); box-shadow: 0 0 10px var(--yellow-glow); }
+  .section.completed-section .section-indicator { background: var(--green); box-shadow: 0 0 10px var(--green-glow); }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+  }
+  .section-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg);
+    padding: 3px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Job Cards */
+  .job-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
   .job-card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
+    border-radius: 10px;
+    padding: 20px 24px;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 20px;
+    transition: all 0.2s ease;
+    position: relative;
+  }
+  .job-card::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 12px;
+    bottom: 12px;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .job-card:hover {
+    border-color: var(--border-accent);
+    background: var(--surface-hover);
+  }
+  .job-card:hover::before { opacity: 1; }
+  .job-card.clickable { cursor: pointer; }
+  .job-card.clickable:hover { border-color: var(--cyan-dim); }
+  .job-card.clickable::before { background: var(--cyan); }
+  .job-card.status-completed::before { background: var(--green); }
+  .job-card.status-failed::before { background: var(--red); }
+  .job-card.status-timeout::before { background: var(--orange); }
+  .job-card.status-pending::before { background: var(--yellow); }
+
+  .job-main { min-width: 0; }
+  .job-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .job-repo {
+    font-weight: 600;
+    font-size: 16px;
+    color: var(--text);
+  }
+  .job-branch {
+    color: var(--text-secondary);
+    font-weight: 400;
+    font-size: 14px;
+  }
+  .job-id {
+    font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg);
+    padding: 2px 8px;
+    border-radius: 4px;
+    display: inline-block;
     margin-bottom: 8px;
+  }
+  .job-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .job-meta-item {
     display: flex;
     align-items: center;
-    gap: 16px;
-    transition: border-color 0.15s;
+    gap: 6px;
   }
-  .job-card:hover { border-color: var(--accent); }
-  .job-card.clickable { cursor: pointer; }
-  .job-info { flex: 1; min-width: 0; }
-  .job-id { font-family: monospace; font-size: 13px; color: var(--text-muted); }
-  .job-repo { font-weight: 600; font-size: 15px; margin: 2px 0; }
-  .job-meta { font-size: 13px; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 12px; }
-  .job-meta span { display: inline-flex; align-items: center; gap: 4px; }
-  .badge {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 600;
+  .job-meta-label {
+    color: var(--text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.3px;
-    white-space: nowrap;
+    font-size: 10px;
+    letter-spacing: 0.5px;
   }
-  .badge-running { background: rgba(56,166,255,0.15); color: var(--accent); }
-  .badge-pending { background: rgba(210,153,34,0.15); color: var(--yellow); }
-  .badge-completed { background: rgba(63,185,80,0.15); color: var(--green); }
-  .badge-failed { background: rgba(248,81,73,0.15); color: var(--red); }
-  .badge-timeout { background: rgba(219,109,40,0.15); color: var(--orange); }
-  .retry-link {
-    font-size: 12px;
-    color: var(--accent);
-    text-decoration: none;
+
+  /* Status Badge */
+  .badge {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-  }
-  .retry-link:hover { text-decoration: underline; }
-  .btn {
     padding: 6px 14px;
     border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-running {
+    background: var(--cyan-glow);
+    color: var(--cyan);
+    border: 1px solid var(--cyan-dim);
+    box-shadow: 0 0 15px var(--cyan-glow);
+  }
+  .badge-pending {
+    background: var(--yellow-glow);
+    color: var(--yellow);
+    border: 1px solid var(--yellow-dim);
+  }
+  .badge-completed {
+    background: var(--green-glow);
+    color: var(--green);
+    border: 1px solid var(--green-dim);
+  }
+  .badge-failed {
+    background: var(--red-glow);
+    color: var(--red);
+    border: 1px solid var(--red-dim);
+  }
+  .badge-timeout {
+    background: var(--orange-glow);
+    color: var(--orange);
+    border: 1px solid rgba(219,109,40,0.4);
+  }
+
+  /* Actions */
+  .job-actions { display: flex; gap: 8px; }
+  .btn {
+    padding: 8px 16px;
+    border-radius: 6px;
     border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text);
-    font-size: 13px;
+    background: var(--bg);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
     transition: all 0.15s;
-    white-space: nowrap;
   }
-  .btn:hover { background: var(--border); }
-  .btn-retry { border-color: var(--accent); color: var(--accent); }
-  .btn-retry:hover { background: rgba(56,166,255,0.15); }
-  .btn-retry:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+    border-color: var(--border-accent);
+  }
+  .btn-primary {
+    border-color: var(--cyan-dim);
+    color: var(--cyan);
+    background: var(--cyan-glow);
+  }
+  .btn-primary:hover {
+    background: rgba(57, 197, 207, 0.25);
+    border-color: var(--cyan);
+    box-shadow: 0 0 15px var(--cyan-glow);
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Push Status */
+  .push-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .push-status.success { color: var(--green); background: var(--green-glow); }
+  .push-status.failed { color: var(--red); background: var(--red-glow); }
+
+  /* Retry Link */
+  .retry-of {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: 8px;
+    padding: 2px 8px;
+    background: var(--bg);
+    border-radius: 4px;
+  }
+
+  /* Empty State */
+  .empty {
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 32px 0;
+    text-align: center;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+  }
 
   /* TUI Overlay */
   .tui-overlay {
     display: none;
     position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.85);
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--bg);
     z-index: 1000;
     flex-direction: column;
   }
@@ -128,60 +406,140 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 20px;
+    padding: 14px 24px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
   }
-  .tui-header .tui-title { font-weight: 600; font-size: 14px; }
-  .tui-close {
-    background: none;
-    border: 1px solid var(--border);
+  .tui-title {
+    font-weight: 500;
+    font-size: 14px;
     color: var(--text);
-    padding: 4px 12px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
-  .tui-close:hover { background: var(--border); }
-  .tui-terminal { flex: 1; padding: 8px; }
+  .tui-title-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--cyan);
+    box-shadow: 0 0 10px var(--cyan);
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  .tui-title-muted {
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+  .tui-close {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.15s;
+  }
+  .tui-close:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+    border-color: var(--border-accent);
+  }
+  .tui-terminal {
+    flex: 1;
+    padding: 12px;
+    background: var(--bg);
+  }
   .tui-banner {
     display: none;
-    padding: 12px 20px;
+    padding: 14px 24px;
     text-align: center;
-    font-weight: 600;
-    font-size: 14px;
+    font-weight: 500;
+    font-size: 13px;
   }
-  .tui-banner.completed { display: block; background: rgba(63,185,80,0.15); color: var(--green); }
-  .tui-banner.failed { display: block; background: rgba(248,81,73,0.15); color: var(--red); }
-  .tui-banner.timeout { display: block; background: rgba(219,109,40,0.15); color: var(--orange); }
+  .tui-banner.completed {
+    display: block;
+    background: var(--green-glow);
+    color: var(--green);
+    border-bottom: 1px solid var(--green-dim);
+  }
+  .tui-banner.failed {
+    display: block;
+    background: var(--red-glow);
+    color: var(--red);
+    border-bottom: 1px solid var(--red-dim);
+  }
+  .tui-banner.timeout {
+    display: block;
+    background: var(--orange-glow);
+    color: var(--orange);
+    border-bottom: 1px solid rgba(219,109,40,0.4);
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>&#x1F528; BTB Dashboard</h1>
-  <div class="status" id="refresh-status">Auto-refresh: active</div>
+  <div class="logo">
+    <div class="logo-mark">B</div>
+    <div class="logo-text">btb<span>dashboard</span></div>
+  </div>
+  <div class="header-status">
+    <div class="status-dot"></div>
+    <span>Live</span>
+  </div>
 </header>
 
 <div class="container">
-  <div class="section" id="running-section">
-    <h2>Running <span class="count" id="running-count">0</span></h2>
-    <div id="running-jobs"></div>
+  <div class="stats-grid">
+    <div class="stat-card running">
+      <div class="stat-label">Running</div>
+      <div class="stat-value" id="stat-running">0</div>
+    </div>
+    <div class="stat-card queued">
+      <div class="stat-label">Queued</div>
+      <div class="stat-value" id="stat-queued">0</div>
+    </div>
+    <div class="stat-card completed">
+      <div class="stat-label">Completed</div>
+      <div class="stat-value" id="stat-completed">0</div>
+    </div>
   </div>
-  <div class="section" id="pending-section">
-    <h2>Queued <span class="count" id="pending-count">0</span></h2>
-    <div id="pending-jobs"></div>
+
+  <div class="section running-section" id="running-section">
+    <div class="section-header">
+      <div class="section-indicator"></div>
+      <span class="section-title">Running</span>
+      <span class="section-count" id="running-count">0</span>
+    </div>
+    <div class="job-list" id="running-jobs"></div>
   </div>
-  <div class="section" id="completed-section">
-    <h2>Completed <span class="count" id="completed-count">0</span></h2>
-    <div id="completed-jobs"></div>
+
+  <div class="section pending-section" id="pending-section">
+    <div class="section-header">
+      <div class="section-indicator"></div>
+      <span class="section-title">Queued</span>
+      <span class="section-count" id="pending-count">0</span>
+    </div>
+    <div class="job-list" id="pending-jobs"></div>
+  </div>
+
+  <div class="section completed-section" id="completed-section">
+    <div class="section-header">
+      <div class="section-indicator"></div>
+      <span class="section-title">Completed</span>
+      <span class="section-count" id="completed-count">0</span>
+    </div>
+    <div class="job-list" id="completed-jobs"></div>
   </div>
 </div>
 
-<!-- TUI Overlay -->
 <div class="tui-overlay" id="tui-overlay">
   <div class="tui-header">
-    <span class="tui-title" id="tui-title">Live TUI</span>
-    <button class="tui-close" id="tui-close">Close (Esc)</button>
+    <span class="tui-title">
+      <span class="tui-title-indicator"></span>
+      <span id="tui-title-text">Live Output</span>
+    </span>
+    <button class="tui-close" id="tui-close">Close [Esc]</button>
   </div>
   <div class="tui-banner" id="tui-banner"></div>
   <div class="tui-terminal" id="tui-terminal"></div>
@@ -200,7 +558,6 @@
   let currentJobId = null;
   let lastJobData = {};
 
-  // --- Helpers ---
   function extractRepoName(url) {
     if (!url) return 'unknown';
     const m = url.match(/\/([^/]+?)(?:\.git)?$/);
@@ -212,50 +569,54 @@
   }
 
   function formatTime(iso) {
-    if (!iso) return '—';
+    if (!iso) return '-';
     const d = new Date(iso);
-    return d.toLocaleString();
+    return d.toLocaleString(undefined, {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
   }
 
   function badgeClass(status) {
-    const map = { running: 'badge-running', pending: 'badge-pending', completed: 'badge-completed', failed: 'badge-failed', timeout: 'badge-timeout' };
-    return map[status] || '';
+    return 'badge-' + status;
   }
 
-  // --- Render ---
+  function statusClass(status) {
+    return 'status-' + status;
+  }
+
   function renderJobCard(job, opts) {
     const card = document.createElement('div');
-    card.className = 'job-card' + (opts.clickable ? ' clickable' : '');
+    card.className = 'job-card ' + statusClass(job.status) + (opts.clickable ? ' clickable' : '');
     card.dataset.jobId = job.id;
 
-    let retryHtml = '';
-    if (job.retry_of) {
-      retryHtml = '<a class="retry-link" href="#" onclick="event.stopPropagation(); return false;" title="View original job">&#x1F504; retry of ' + truncateId(job.retry_of) + '</a>';
+    let retryHtml = job.retry_of ? '<span class="retry-of">retry of ' + truncateId(job.retry_of) + '</span>' : '';
+
+    let pushHtml = '';
+    if (job.push_success === true) {
+      pushHtml = '<span class="push-status success">pushed</span>';
+    } else if (job.push_success === false) {
+      pushHtml = '<span class="push-status failed" title="' + (job.push_error || '') + '">push failed</span>';
     }
 
     let actionsHtml = '';
     if (opts.showRetry && ['completed', 'failed', 'timeout'].includes(job.status)) {
-      actionsHtml = '<button class="btn btn-retry" data-retry-id="' + job.id + '">Retry</button>';
-    }
-
-    let pushInfo = '';
-    if (job.push_success === true) {
-      pushInfo = '<span title="Results pushed">&#x2705; pushed</span>';
-    } else if (job.push_success === false) {
-      pushInfo = '<span title="Push failed: ' + (job.push_error || '') + '">&#x274C; push failed</span>';
+      actionsHtml = '<div class="job-actions"><button class="btn btn-primary" data-retry-id="' + job.id + '">Retry</button></div>';
     }
 
     card.innerHTML =
-      '<div class="job-info">' +
-        '<div class="job-id">' + truncateId(job.id) + ' ' + retryHtml + '</div>' +
-        '<div class="job-repo">' + extractRepoName(job.repo_url) + ' <span style="font-weight:400;color:var(--text-muted)">/ ' + job.branch + '</span></div>' +
+      '<div class="job-main">' +
+        '<div class="job-header">' +
+          '<span class="job-repo">' + extractRepoName(job.repo_url) + '</span>' +
+          '<span class="job-branch">/ ' + job.branch + '</span>' +
+          retryHtml +
+        '</div>' +
+        '<div class="job-id">' + truncateId(job.id) + '</div>' +
         '<div class="job-meta">' +
-          '<span><b>Spec:</b> ' + (job.spec_name || '—') + '</span>' +
-          '<span><b>By:</b> ' + (job.pusher || '—') + '</span>' +
-          '<span><b>Submitted:</b> ' + formatTime(job.submitted_at) + '</span>' +
-          (job.started_at ? '<span><b>Started:</b> ' + formatTime(job.started_at) + '</span>' : '') +
-          (job.completed_at ? '<span><b>Completed:</b> ' + formatTime(job.completed_at) + '</span>' : '') +
-          pushInfo +
+          '<span class="job-meta-item"><span class="job-meta-label">Spec</span> ' + (job.spec_name || '-') + '</span>' +
+          '<span class="job-meta-item"><span class="job-meta-label">By</span> ' + (job.pusher || '-') + '</span>' +
+          '<span class="job-meta-item"><span class="job-meta-label">Submitted</span> ' + formatTime(job.submitted_at) + '</span>' +
+          (job.completed_at ? '<span class="job-meta-item"><span class="job-meta-label">Completed</span> ' + formatTime(job.completed_at) + '</span>' : '') +
+          (pushHtml ? '<span class="job-meta-item">' + pushHtml + '</span>' : '') +
         '</div>' +
       '</div>' +
       '<span class="badge ' + badgeClass(job.status) + '">' + job.status + '</span>' +
@@ -281,9 +642,17 @@
     const pendingEl = document.getElementById('pending-jobs');
     const completedEl = document.getElementById('completed-jobs');
 
-    document.getElementById('running-count').textContent = data.running ? '1' : '0';
-    document.getElementById('pending-count').textContent = data.pending.length;
-    document.getElementById('completed-count').textContent = data.completed.length;
+    const runningCount = data.running ? 1 : 0;
+    const pendingCount = data.pending.length;
+    const completedCount = data.completed.length;
+
+    document.getElementById('stat-running').textContent = runningCount;
+    document.getElementById('stat-queued').textContent = pendingCount;
+    document.getElementById('stat-completed').textContent = completedCount;
+
+    document.getElementById('running-count').textContent = runningCount;
+    document.getElementById('pending-count').textContent = pendingCount;
+    document.getElementById('completed-count').textContent = completedCount;
 
     runningEl.innerHTML = '';
     if (data.running) {
@@ -309,10 +678,9 @@
         lastJobData[job.id] = job;
       });
     } else {
-      completedEl.innerHTML = '<div class="empty">No completed jobs yet</div>';
+      completedEl.innerHTML = '<div class="empty">No completed jobs</div>';
     }
 
-    // Check if the currently viewed TUI job has completed
     if (currentJobId && data.running && data.running.id !== currentJobId) {
       checkJobCompletion(currentJobId);
     } else if (currentJobId && !data.running) {
@@ -320,7 +688,6 @@
     }
   }
 
-  // --- API ---
   function fetchJobs() {
     fetch('/api/jobs')
       .then(function(r) { return r.json(); })
@@ -335,7 +702,7 @@
       .then(function(r) {
         if (r.status === 201) {
           return r.json().then(function(data) {
-            btn.textContent = 'Retried \u2713';
+            btn.textContent = 'Queued';
             fetchJobs();
           });
         } else {
@@ -364,27 +731,49 @@
       .catch(function() {});
   }
 
-  // --- TUI Viewer ---
   function openTUI(jobId, job) {
     currentJobId = jobId;
     var overlay = document.getElementById('tui-overlay');
     var termEl = document.getElementById('tui-terminal');
     var banner = document.getElementById('tui-banner');
-    var title = document.getElementById('tui-title');
+    var title = document.getElementById('tui-title-text');
 
     overlay.classList.add('active');
     banner.className = 'tui-banner';
     banner.style.display = 'none';
-    title.textContent = 'Live TUI — ' + extractRepoName(job.repo_url) + ' / ' + job.branch;
+    title.innerHTML = extractRepoName(job.repo_url) + ' <span class="tui-title-muted">/ ' + job.branch + '</span>';
 
     termEl.innerHTML = '';
 
     currentTerm = new Terminal({
-      theme: { background: '#0d1117', foreground: '#c9d1d9' },
-      fontSize: 14,
-      fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+      theme: {
+        background: '#0a0e14',
+        foreground: '#e6edf3',
+        cursor: '#39c5cf',
+        cursorAccent: '#0a0e14',
+        selection: 'rgba(57, 197, 207, 0.2)',
+        black: '#3d4752',
+        red: '#f85149',
+        green: '#3fb950',
+        yellow: '#d4a72c',
+        blue: '#58a6ff',
+        magenta: '#bc8cff',
+        cyan: '#39c5cf',
+        white: '#9eaab8',
+        brightBlack: '#5c6b7a',
+        brightRed: '#ff7b72',
+        brightGreen: '#56d364',
+        brightYellow: '#e3b341',
+        brightBlue: '#79c0ff',
+        brightMagenta: '#d2a8ff',
+        brightCyan: '#56d4dd',
+        brightWhite: '#f0f6fc'
+      },
+      fontSize: 13,
+      fontFamily: "'SF Mono', 'Fira Code', ui-monospace, monospace",
       cursorBlink: false,
       scrollback: 10000,
+      lineHeight: 1.3
     });
     currentFit = new FitAddon.FitAddon();
     currentTerm.loadAddon(currentFit);
@@ -402,11 +791,10 @@
     };
 
     currentWs.onerror = function() {
-      currentTerm.write('\r\n[WebSocket error]\r\n');
+      currentTerm.write('\r\n[Connection error]\r\n');
     };
 
     currentWs.onclose = function() {
-      // Check if job completed
       checkJobCompletion(jobId);
     };
 
@@ -418,14 +806,8 @@
     overlay.classList.remove('active');
     currentJobId = null;
 
-    if (currentWs) {
-      currentWs.close();
-      currentWs = null;
-    }
-    if (currentTerm) {
-      currentTerm.dispose();
-      currentTerm = null;
-    }
+    if (currentWs) { currentWs.close(); currentWs = null; }
+    if (currentTerm) { currentTerm.dispose(); currentTerm = null; }
     currentFit = null;
     window.removeEventListener('resize', onResize);
   }
@@ -433,23 +815,21 @@
   function showCompletionBanner(status) {
     var banner = document.getElementById('tui-banner');
     banner.className = 'tui-banner ' + status;
-    banner.textContent = 'Job ' + status + (status === 'completed' ? ' successfully' : '') + '!';
+    var msg = status === 'completed' ? 'Job completed successfully' :
+              status === 'failed' ? 'Job failed' : 'Job timed out';
+    banner.textContent = msg;
     banner.style.display = 'block';
   }
 
   function onResize() {
-    if (currentFit) {
-      try { currentFit.fit(); } catch(e) {}
-    }
+    if (currentFit) { try { currentFit.fit(); } catch(e) {} }
   }
 
-  // --- Events ---
   document.getElementById('tui-close').addEventListener('click', closeTUI);
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') closeTUI();
   });
 
-  // --- Init ---
   fetchJobs();
   refreshTimer = setInterval(fetchJobs, 10000);
 })();

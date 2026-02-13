@@ -63,12 +63,21 @@ class TUIStreamer:
         The full accumulated buffer is sent immediately as a binary
         message so the client sees the complete terminal history.
 
+        To avoid duplicate data, we send the catchup BEFORE adding the
+        client to the broadcast set. This way:
+        1. Client receives the current buffer (catchup)
+        2. Client is added to _clients
+        3. Future broadcasts only send NEW data
+
         Args:
             ws: The WebSocket connection to add.
         """
         async with self._lock:
-            self._clients.add(ws)
-            # Send current buffer for catchup
+            # Send current buffer for catchup BEFORE adding to clients set
+            # This prevents the race where:
+            # 1. stream_loop extends buffer and broadcasts chunk
+            # 2. add_client sends buffer (including chunk) and adds client
+            # 3. broadcast sends chunk again to the new client
             if self._buffer:
                 try:
                     await ws.send_bytes(bytes(self._buffer))
@@ -78,7 +87,9 @@ class TUIStreamer:
                         self.job_id,
                         exc,
                     )
-                    self._clients.discard(ws)
+                    return  # Don't add client if catchup failed
+            # Now add to clients - they'll only receive future broadcasts
+            self._clients.add(ws)
 
     async def remove_client(self, ws: web.WebSocketResponse) -> None:
         """Remove a WebSocket client from the set.

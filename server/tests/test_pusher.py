@@ -110,8 +110,8 @@ def git_repos(tmp_path):
 
 @pytest.fixture
 def pusher() -> ResultPusher:
-    """Create a ResultPusher instance."""
-    return ResultPusher()
+    """Create a ResultPusher instance (no btb_path — source push disabled)."""
+    return ResultPusher(btb_path=None)
 
 
 # --- Results branch name computation ---

@@ -43,6 +43,7 @@ class JobExecutor:
         pusher: ResultPusher instance for pushing results back.
         queue: JobQueue instance for completing jobs.
         job_timeout: Maximum seconds a btb run may take before timeout.
+        github_token: GitHub personal access token for cloning private repos.
     """
 
     def __init__(
@@ -53,6 +54,7 @@ class JobExecutor:
         pusher: ResultPusher,
         queue: JobQueue,
         job_timeout: int = 7200,
+        github_token: Optional[str] = None,
     ) -> None:
         self._btb_path = btb_path
         self._jobs_dir = Path(jobs_dir)
@@ -60,10 +62,13 @@ class JobExecutor:
         self._pusher = pusher
         self._queue = queue
         self._job_timeout = job_timeout
+        self._github_token = github_token
 
         self._running = False
         self._current_job: Optional[Job] = None
         self._process: Optional[asyncio.subprocess.Process] = None
+        self._stop_requested = False
+        self._preserve_on_stop = False
 
     def is_running(self) -> bool:
         """Return whether a job is currently being executed."""
@@ -86,6 +91,29 @@ class JobExecutor:
             logger.info("Sent SIGTERM to process group %d", pgid)
         except (ProcessLookupError, OSError) as exc:
             logger.warning("Failed to kill process group: %s", exc)
+
+    def request_stop(self, preserve_workdir: bool = True) -> bool:
+        """Request the current job to stop.
+
+        Args:
+            preserve_workdir: If True, don't cleanup the working directory
+                so the job can be resumed later.
+
+        Returns:
+            True if a stop was requested, False if no job is running.
+        """
+        if not self._running or self._current_job is None:
+            return False
+        self._stop_requested = True
+        self._preserve_on_stop = preserve_workdir
+        self.kill_current()
+        logger.info("Stop requested for job %s (preserve=%s)",
+                    self._current_job.id, preserve_workdir)
+        return True
+
+    def is_stop_requested(self) -> bool:
+        """Return whether a stop has been requested."""
+        return self._stop_requested
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -153,6 +181,26 @@ class JobExecutor:
             )
             shutil.rmtree(str(job_dir), ignore_errors=True)
 
+    def _get_authenticated_url(self, repo_url: str) -> str:
+        """Convert a GitHub HTTPS URL to include authentication token.
+
+        Args:
+            repo_url: Original clone URL (e.g. https://github.com/owner/repo.git)
+
+        Returns:
+            Authenticated URL with token embedded.
+        """
+        if not self._github_token:
+            return repo_url
+        # Only modify GitHub HTTPS URLs
+        if repo_url.startswith("https://github.com/"):
+            # https://github.com/owner/repo.git -> https://x-access-token:TOKEN@github.com/owner/repo.git
+            return repo_url.replace(
+                "https://github.com/",
+                f"https://x-access-token:{self._github_token}@github.com/"
+            )
+        return repo_url
+
     async def _clone_repo(self, job: Job) -> int:
         """Clone the repository and checkout the target commit.
 
@@ -163,12 +211,15 @@ class JobExecutor:
         job_dir = self._job_dir(job)
         job_dir.mkdir(parents=True, exist_ok=True)
 
+        # Use authenticated URL for private repos
+        clone_url = self._get_authenticated_url(job.repo_url)
+
         # Clone at the specified branch
         rc, _out, err = await self._run_subprocess(
             [
                 "git", "clone",
                 "--branch", job.branch,
-                job.repo_url,
+                clone_url,
                 str(repo_dir),
             ],
             cwd=str(job_dir),
@@ -370,6 +421,34 @@ class JobExecutor:
             job_id=job.id,
         )
 
+    async def _push_to_source(self, job: Job, status: str) -> Optional[PushResult]:
+        """Squash-rebase and push btb work to the source branch.
+
+        Only attempted for successful jobs. Returns None if skipped.
+        """
+        if status != "completed":
+            logger.info(
+                "Skipping source-branch push for job %s (status=%s)",
+                job.id, status,
+            )
+            return None
+
+        repo_dir = self._repo_dir(job)
+        result = await self._pusher.push_to_source_branch(job, str(repo_dir))
+
+        if result.success:
+            logger.info(
+                "Source-branch push succeeded for job %s to %s",
+                job.id, result.branch,
+            )
+        else:
+            logger.warning(
+                "Source-branch push failed for job %s: %s (results branch still available)",
+                job.id, result.error,
+            )
+
+        return result
+
     def _preserve_logs(self, job: Job) -> bool:
         """Copy ``.ralph-logs/`` to the persistent logs directory.
 
@@ -512,7 +591,7 @@ class JobExecutor:
 
         # Steps 6-9: Post-execution lifecycle (always runs)
         try:
-            # Step 6: Push results
+            # Step 6a: Push results to btb-results/{branch} (always)
             if self._repo_dir(job).exists():
                 push_result = await self._push_results(job, status=status)
             else:
@@ -521,6 +600,15 @@ class JobExecutor:
                     branch=f"btb-results/{job.branch}",
                     error="Repo directory does not exist",
                 )
+
+            # Step 6b: Squash-rebase and push to source branch (completed only)
+            if self._repo_dir(job).exists():
+                source_result = await self._push_to_source(job, status)
+                if source_result and not source_result.success:
+                    logger.warning(
+                        "Source push failed for job %s: %s",
+                        job.id, source_result.error,
+                    )
         except Exception as exc:
             logger.error("Push failed for job %s: %s", job.id, exc)
             push_result = PushResult(
