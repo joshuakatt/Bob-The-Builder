@@ -800,7 +800,9 @@ install_project_deps() {
         fi
     fi
 
-    [ "$installed" -gt 0 ] && echo ""
+    if [ "$installed" -gt 0 ]; then
+        echo ""
+    fi
 }
 install_project_deps
 
