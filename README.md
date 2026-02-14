@@ -8,7 +8,7 @@ Each task gets its own worktree and agent process. A planner assigns models per 
 
 ```bash
 # 1. Clone btb anywhere
-git clone https://github.com/joshkatt/Bob.git ~/btb
+git clone https://github.com/joshuakatt/Bob-The-Builder.git ~/btb
 
 # 2. cd into your project
 cd ~/my-project
