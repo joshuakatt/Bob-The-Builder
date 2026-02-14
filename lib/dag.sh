@@ -49,49 +49,21 @@ analyze_dependencies() {
 
 Read ${task_file}. ${context_files}
 
-CRITICAL: You MUST include EVERY SINGLE incomplete task (marked with [ ]) in your output. Do not skip or omit any tasks.
+Analyze ALL incomplete tasks (marked with [ ]) and output a dependency DAG as JSON.
 
-First, list all incomplete tasks you found to verify completeness.
-Then analyze their dependencies.
+Rules:
+1. Include EVERY incomplete leaf task (subtasks like 1.1, 2.3 — NOT parent headers)
+2. Tasks writing to the SAME file cannot be parallel
+3. Sequential subtasks within a group (2.1→2.2→2.3) have implicit ordering
+4. Setup tasks have no dependencies; tests depend on their implementation
 
-Rules for dependency analysis:
-1. Setup/infrastructure tasks (creating directories, config files) have NO dependencies
-2. Type definition tasks depend on project setup
-3. Implementation tasks depend on type definitions and the files they import
-4. Test tasks depend on the implementation they test
-5. Documentation tasks depend on the code they document
-6. Tasks that write to the SAME file CANNOT be parallel (file conflict)
-7. Tasks within the same parent group that are numbered sequentially MAY have implicit ordering
-8. Parent tasks (like \"2. Phase 1: Model Profiler\") are NOT executable - only include leaf tasks (2.1, 2.2, etc.)
-9. Checkpoint tasks (like \"3. Checkpoint - Profiler Complete\") ARE executable and should be included
+Model assignment — pick ONLY from: ${models_list}
+- claude-sonnet-4.5: simple/standard tasks
+- claude-opus-4.6: complex/architectural tasks
+WARNING: 'claude-opus-4.5' does NOT exist.
 
-Rules for model assignment — you MUST assign a \"model\" field to each task.
-Pick ONLY from this EXACT list (do NOT invent or modify model names): ${models_list}
-Guidelines:
-- claude-sonnet-4.5: Simple tasks — standard implementation, writing functions, tests, config, boilerplate, straightforward code
-- claude-opus-4.6: Hard tasks — research, hard algorithms, architectural decisions, tricky debugging, security-critical code, complex multi-file refactoring
-default to claude-opus-4.6 when unsure.
-WARNING: 'claude-opus-4.5' does NOT exist. Only use the exact model names listed above.
-
-Output ONLY a JSON object (no markdown, no explanation) with this structure:
-{
-  \"waves\": [
-    {
-      \"id\": 0,
-      \"tasks\": [
-        {
-          \"id\": \"1.1\",
-          \"description\": \"task description\",
-          \"parent\": \"1\",
-          \"dependencies\": [],
-          \"model\": \"claude-sonnet-4.5\"
-        }
-      ]
-    }
-  ]
-}
-
-VERIFICATION: Before outputting, count the incomplete tasks in the input and verify your JSON includes the same number of tasks." 2>/dev/null) || true
+Output ONLY valid JSON, no markdown fences, no explanation:
+{\"waves\":[{\"id\":0,\"tasks\":[{\"id\":\"1.1\",\"description\":\"...\",\"parent\":\"1\",\"dependencies\":[],\"model\":\"claude-sonnet-4.5\"}]}]}" 2>/dev/null) || true
 
     local json
     json=$(extract_json "$raw_response" 2>/dev/null) || true
@@ -151,42 +123,15 @@ print(', '.join(sorted(ids, key=lambda x: [int(p) if p.isdigit() else p for p in
         patch_response=$(kiro-cli chat --no-interactive --agent planner --trust-all-tools \
             "Read ${task_file}. ${context_files}
 
-You previously analyzed this task file and produced a DAG, but you MISSED the following ${missing_count} tasks:
+Your previous DAG missed ${missing_count} tasks. Produce a DAG fragment for ONLY these:
 ${missing_detail}
 
-You MUST now produce a DAG fragment containing ONLY these missing tasks.
-For each missing task, determine which wave it belongs to and what its dependencies are.
-Use the same wave numbering scheme — if a missing task depends on a task already in wave 2, place it in wave 3 or later.
+Already in DAG (do NOT include): ${existing_ids_str}
 
-The existing DAG already covers these task IDs (do NOT include them again):
-${existing_ids_str}
+Output ONLY valid JSON, no markdown fences:
+{\"waves\":[{\"id\":<wave>,\"tasks\":[{\"id\":\"<id>\",\"description\":\"...\",\"parent\":\"<parent>\",\"dependencies\":[],\"model\":\"claude-sonnet-4.5\"}]}]}
 
-Rules for model assignment — assign a \"model\" field to each task.
-Pick ONLY from: ${models_list}
-Guidelines:
-- claude-sonnet-4.5: Simple tasks
-- claude-opus-4.6: Hard tasks
-Default to claude-opus-4.6 when unsure.
-
-Output ONLY a JSON object (no markdown) with the same structure:
-{
-  \"waves\": [
-    {
-      \"id\": <wave_number>,
-      \"tasks\": [
-        {
-          \"id\": \"<task_id>\",
-          \"description\": \"<description>\",
-          \"parent\": \"<parent_id>\",
-          \"dependencies\": [\"<dep_id>\", ...],
-          \"model\": \"<model>\"
-        }
-      ]
-    }
-  ]
-}
-
-Include ALL ${missing_count} missing tasks. Do NOT include any tasks that are already in the existing DAG." 2>/dev/null) || true
+Models: pick from ${models_list} only. 'claude-opus-4.5' does NOT exist." 2>/dev/null) || true
 
         local patch_json
         patch_json=$(extract_json "$patch_response" 2>/dev/null) || true
@@ -349,8 +294,11 @@ print(json.dumps(base))
     echo "$result"
 }
 
-# Append missing tasks as sequential waves at the tail of the DAG.
-# This is the last-resort fallback so no task is ever lost.
+# Append missing tasks into the DAG with inferred dependencies.
+# Instead of making everything sequential, groups tasks by parent and
+# infers ordering: subtasks within the same parent are sequential
+# (2.1 → 2.2 → 2.3), but different parent groups run in parallel waves.
+# Also respects existing DAG tasks as dependencies where appropriate.
 _append_missing_as_sequential() {
     local dag_json="$1"
     local task_file="$2"
@@ -364,6 +312,7 @@ _append_missing_as_sequential() {
     local result
     result=$(python3 -c "
 import sys, json, re
+from collections import defaultdict
 
 with open('${dag_file}') as f:
     dag = json.load(f)
@@ -379,22 +328,73 @@ with open('${task_file}') as f:
         if m:
             desc_map[m.group(1)] = m.group(2).strip()
 
-max_wid = max((w['id'] for w in dag.get('waves', [])), default=-1)
+# Collect existing task IDs and the max wave ID
+existing_ids = set()
+max_wid = -1
+for wave in dag.get('waves', []):
+    max_wid = max(max_wid, wave['id'])
+    for task in wave.get('tasks', []):
+        existing_ids.add(task['id'])
 
+# Group missing tasks by parent
+groups = defaultdict(list)
 for tid in missing:
-    max_wid += 1
     parent = tid.split('.')[0]
-    desc = desc_map.get(tid, '')
-    dag['waves'].append({
-        'id': max_wid,
-        'tasks': [{
+    groups[parent].append(tid)
+
+# Sort subtasks within each group numerically
+def sort_key(tid):
+    parts = tid.split('.')
+    return [int(p) if p.isdigit() else p for p in parts]
+
+for parent in groups:
+    groups[parent].sort(key=sort_key)
+
+# Find the last existing task ID for each parent group (if any)
+# so we can chain the first missing subtask after it
+last_existing_per_parent = {}
+for wave in dag.get('waves', []):
+    for task in wave.get('tasks', []):
+        p = task['id'].split('.')[0]
+        last_existing_per_parent[p] = task['id']
+
+# Build waves: tasks at the same position within their parent group
+# can run in parallel. E.g., 2.1 and 3.1 can be parallel, then
+# 2.2 and 3.2 can be parallel, etc.
+# First, determine the max depth across all groups
+max_depth = max(len(tasks) for tasks in groups.values())
+
+for depth_idx in range(max_depth):
+    wave_tasks = []
+    for parent in sorted(groups.keys(), key=lambda x: int(x) if x.isdigit() else x):
+        subtasks = groups[parent]
+        if depth_idx >= len(subtasks):
+            continue
+        tid = subtasks[depth_idx]
+        # Determine dependency
+        deps = []
+        if depth_idx == 0:
+            # First missing subtask in this group — depends on last existing task in same parent
+            if parent in last_existing_per_parent:
+                deps = [last_existing_per_parent[parent]]
+        else:
+            # Depends on previous subtask in same group
+            deps = [subtasks[depth_idx - 1]]
+
+        wave_tasks.append({
             'id': tid,
-            'description': desc,
+            'description': desc_map.get(tid, ''),
             'parent': parent,
-            'dependencies': [],
+            'dependencies': deps,
             'model': default_model
-        }]
-    })
+        })
+
+    if wave_tasks:
+        max_wid += 1
+        dag['waves'].append({
+            'id': max_wid,
+            'tasks': wave_tasks
+        })
 
 print(json.dumps(dag))
 " 2>/dev/null)
@@ -405,18 +405,25 @@ print(json.dumps(dag))
 
 # ─── JSON Extraction ─────────────────────────────────────────
 
-# Extract JSON object from a string that might contain surrounding text
+# Extract JSON object from a string that might contain surrounding text.
+# Handles: raw JSON, markdown-fenced JSON (```json ... ```), JSON with
+# surrounding explanation text, and multiple JSON candidates (picks the
+# one with a "waves" key if present).
 extract_json() {
     local input="$1"
     echo "$input" | python3 -c "
-import sys, json
+import sys, json, re
 
 text = sys.stdin.read()
 
-# Find the outermost { ... } pair
+# Strategy 1: Strip markdown fences first — LLMs love wrapping in \`\`\`json
+cleaned = re.sub(r'\`\`\`(?:json)?\s*\n?', '', text)
+
+# Strategy 2: Try to find all { ... } candidates and pick the best one
+candidates = []
 depth = 0
 start = -1
-for i, ch in enumerate(text):
+for i, ch in enumerate(cleaned):
     if ch == '{':
         if depth == 0:
             start = i
@@ -424,55 +431,132 @@ for i, ch in enumerate(text):
     elif ch == '}':
         depth -= 1
         if depth == 0 and start >= 0:
-            candidate = text[start:i+1]
+            candidate = cleaned[start:i+1]
             try:
                 parsed = json.loads(candidate)
-                print(json.dumps(parsed))
-                sys.exit(0)
+                candidates.append(parsed)
             except json.JSONDecodeError:
-                start = -1
-                continue
+                pass
+            start = -1
 
-sys.exit(1)
+if not candidates:
+    sys.exit(1)
+
+# Prefer the candidate that has a 'waves' key (our DAG schema)
+for c in candidates:
+    if 'waves' in c:
+        print(json.dumps(c))
+        sys.exit(0)
+
+# Fall back to the largest candidate (most likely the full response)
+best = max(candidates, key=lambda c: len(json.dumps(c)))
+print(json.dumps(best))
 "
 }
 
 # ─── Fallback DAG Builder ───────────────────────────────────
-# If the planner agent fails, build a conservative sequential DAG
+# If the planner agent fails entirely, build a DAG with inferred
+# dependencies from task numbering. Subtasks within the same parent
+# are sequential; different parent groups run in parallel.
 
 build_fallback_dag() {
     local task_file="$1"
-    log_warn "Using fallback sequential DAG (no parallelism)" >&2
+    local default_model="${DEFAULT_TASK_MODEL:-claude-sonnet-4.5}"
+    log_warn "Using fallback DAG (inferred dependencies from task numbering)" >&2
 
-    local tasks
-    tasks=$(get_all_leaf_tasks "$task_file")
+    python3 - "$task_file" "$default_model" <<'PYEOF'
+import sys, json, re, subprocess
+from collections import defaultdict
 
-    local wave_id=0
-    local json='{"waves":['
-    local first_wave=true
+task_file = sys.argv[1]
+default_model = sys.argv[2]
 
-    for task_id in $tasks; do
-        if is_task_complete "$task_file" "$task_id"; then
+# Get all leaf task IDs using the same logic as get_all_leaf_tasks
+with open(task_file) as f:
+    lines = f.readlines()
+
+subtask_ids = []
+parents_with_children = set()
+desc_map = {}
+for line in lines:
+    m = re.match(r'^[\s]*-\s+\[.\]\s+(\d+)\.(\d+\S*)\s+(.*)', line)
+    if m:
+        parent_id = m.group(1)
+        sub_part = m.group(2)
+        if sub_part and sub_part[0].isdigit():
+            full_id = parent_id + '.' + sub_part
+            subtask_ids.append(full_id)
+            parents_with_children.add(parent_id)
+            desc_map[full_id] = m.group(3).strip()
+
+childless_ids = []
+for line in lines:
+    m = re.match(r'^-\s+\[.\]\s+(\d+)\.\s+(.*)', line)
+    if m:
+        tid = m.group(1)
+        if tid not in parents_with_children:
+            childless_ids.append(tid)
+            desc_map[tid] = m.group(2).strip()
+
+all_ids = subtask_ids + childless_ids
+
+# Filter to incomplete tasks only
+def is_complete(tid):
+    pattern = re.compile(r'\[x\]\s+' + re.escape(tid) + r'(?:\.?\s)')
+    for line in lines:
+        if pattern.search(line):
+            return True
+    return False
+
+incomplete = [tid for tid in all_ids if not is_complete(tid)]
+
+if not incomplete:
+    print(json.dumps({"waves": []}))
+    sys.exit(0)
+
+# Group by parent
+groups = defaultdict(list)
+for tid in incomplete:
+    parent = tid.split('.')[0]
+    groups[parent].append(tid)
+
+def sort_key(tid):
+    parts = tid.split('.')
+    return [int(p) if p.isdigit() else p for p in parts]
+
+for parent in groups:
+    groups[parent].sort(key=sort_key)
+
+# Build waves: tasks at the same depth within their parent group
+# can run in parallel
+max_depth = max(len(tasks) for tasks in groups.values())
+waves = []
+wave_id = 0
+
+for depth_idx in range(max_depth):
+    wave_tasks = []
+    for parent in sorted(groups.keys(), key=lambda x: int(x) if x.isdigit() else x):
+        subtasks = groups[parent]
+        if depth_idx >= len(subtasks):
             continue
-        fi
+        tid = subtasks[depth_idx]
+        deps = []
+        if depth_idx > 0:
+            deps = [subtasks[depth_idx - 1]]
+        wave_tasks.append({
+            'id': tid,
+            'description': desc_map.get(tid, ''),
+            'parent': parent,
+            'dependencies': deps,
+            'model': default_model
+        })
 
-        local desc
-        desc=$(get_task_description "$task_file" "$task_id")
-        local parent
-        parent=$(echo "$task_id" | cut -d. -f1)
+    if wave_tasks:
+        waves.append({'id': wave_id, 'tasks': wave_tasks})
+        wave_id += 1
 
-        if [ "$first_wave" = true ]; then
-            first_wave=false
-        else
-            json="${json},"
-        fi
-
-        json="${json}{\"id\":${wave_id},\"tasks\":[{\"id\":\"${task_id}\",\"description\":\"${desc}\",\"parent\":\"${parent}\",\"dependencies\":[],\"model\":\"${DEFAULT_TASK_MODEL:-claude-sonnet-4.5}\"}]}"
-        ((wave_id++))
-    done
-
-    json="${json}]}"
-    echo "$json"
+print(json.dumps({"waves": waves}))
+PYEOF
 }
 
 # ─── DAG Queries ─────────────────────────────────────────────

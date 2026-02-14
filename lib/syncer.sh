@@ -295,7 +295,8 @@ while i < len(lines):
         children = []
         j = i + 1
         while j < len(lines):
-            child_match = re.match(r'^\s+- \[(.)\] ' + re.escape(parent_id) + r'\.\d+', lines[j])
+            # Match child tasks — indented or flat format
+            child_match = re.match(r'^[\s]*- \[(.)\] ' + re.escape(parent_id) + r'\.\d+', lines[j])
             if child_match:
                 children.append(child_match.group(1))
                 j += 1

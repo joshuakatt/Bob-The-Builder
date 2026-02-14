@@ -78,7 +78,7 @@ log_to_file() {
 get_all_leaf_tasks() {
     local task_file="$1"
     # Returns all executable task IDs:
-    # 1. Indented subtasks like "  - [ ] 1.1 ..." (have a dot in the ID)
+    # 1. Subtasks with dotted IDs like "1.1", "2.3" (indented or not)
     # 2. Top-level tasks that have NO subtasks (e.g. checkpoints like "- [ ] 3. Checkpoint...")
     python3 - "$task_file" <<'PYEOF'
 import re, sys
@@ -86,22 +86,30 @@ import re, sys
 with open(sys.argv[1]) as f:
     lines = f.readlines()
 
-# Pass 1: collect all subtask IDs (indented, have parent.child format)
+# Pass 1: collect all dotted subtask IDs (e.g. 1.1, 2.3, 7.4)
+# These can be indented or not — handle both formats:
+#   "  - [ ] 1.1 ..."  (indented under parent)
+#   "- [ ] 1.1 ..."    (flat format, no parent header)
 subtask_ids = []
 parents_with_children = set()
 for line in lines:
-    # Indented subtask: starts with whitespace
-    m = re.match(r'^\s+-\s+\[.\]\s+(\d+)\.(\d+\S*)', line)
+    # Match any line with [.] followed by a dotted ID (N.M)
+    m = re.match(r'^[\s]*-\s+\[.\]\s+(\d+)\.(\d+\S*)', line)
     if m:
         parent_id = m.group(1)
-        full_id = parent_id + '.' + m.group(2)
-        subtask_ids.append(full_id)
-        parents_with_children.add(parent_id)
+        sub_part = m.group(2)
+        # Only treat as subtask if sub_part starts with a digit
+        # (distinguishes "1.1 task" from "3. Checkpoint" where "." is punctuation)
+        if sub_part and sub_part[0].isdigit():
+            full_id = parent_id + '.' + sub_part
+            subtask_ids.append(full_id)
+            parents_with_children.add(parent_id)
 
 # Pass 2: collect top-level tasks that have NO children (childless parents = leaf)
+# These look like "- [ ] 3. Checkpoint..." where the ID is just "3"
 childless_ids = []
 for line in lines:
-    # Top-level task: no leading whitespace
+    # Top-level task: "- [ ] N. description" where N has no subtasks
     m = re.match(r'^-\s+\[.\]\s+(\d+)\.\s', line)
     if m:
         tid = m.group(1)
@@ -156,15 +164,31 @@ PYEOF
 }
 
 # Check if ALL subtasks of a parent are complete
+# Handles both indented ("  - [x] 1.1") and flat ("- [x] 1.1") formats
 is_parent_complete() {
     local task_file="$1"
     local parent_id="$2"
-    awk -v pid="$parent_id" '
-        BEGIN { total=0; done=0 }
-        $0 ~ "^[[:space:]]+-[[:space:]]\\[.\\][[:space:]]+" pid "\\.[0-9]+" { total++ }
-        $0 ~ "^[[:space:]]+-[[:space:]]\\[x\\][[:space:]]+" pid "\\.[0-9]+" { done++ }
-        END { exit !(total > 0 && total == done) }
-    ' "$task_file"
+    python3 - "$task_file" "$parent_id" <<'PYEOF'
+import re, sys
+
+task_file = sys.argv[1]
+pid = sys.argv[2]
+
+total = 0
+done = 0
+# Match any line with [.] followed by parent_id.digit (subtask pattern)
+pattern = re.compile(r'\[.\]\s+' + re.escape(pid) + r'\.(\d+)')
+done_pattern = re.compile(r'\[x\]\s+' + re.escape(pid) + r'\.(\d+)')
+
+with open(task_file) as f:
+    for line in f:
+        if pattern.search(line):
+            total += 1
+        if done_pattern.search(line):
+            done += 1
+
+sys.exit(0 if total > 0 and total == done else 1)
+PYEOF
 }
 
 # Get task description by ID
