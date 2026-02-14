@@ -25,7 +25,7 @@ DESIGN_FILE="${SPEC_DIR}/design.md"
 REQUIREMENTS_FILE="${SPEC_DIR}/requirements.md"
 
 # ─── Concurrency Settings ────────────────────────────────────
-MAX_PARALLEL=${MAX_PARALLEL:-4}           # Max total concurrent agent processes
+MAX_PARALLEL=${MAX_PARALLEL:-6}           # Max total concurrent agent processes
 REVIEW_RESERVED_SLOTS=${REVIEW_RESERVED_SLOTS:-1}  # Slots reserved for reviewer/fixer agents
 MAX_ITERATIONS_PER_TASK=${MAX_ITERS:-20}  # Max iterations per task loop
 SYNC_INTERVAL=${SYNC_INTERVAL:-5}         # Seconds between orchestrator polls
@@ -51,7 +51,7 @@ STEERING_MODEL="${STEERING_MODEL:-claude-opus-4.6}" # Model for steering generat
 # Valid models: auto, claude-haiku-4.5, claude-sonnet-4, claude-sonnet-4.5, claude-opus-4.5, claude-opus-4.6
 # Ordered cheapest → most expensive. The planner assigns one per task.
 AVAILABLE_MODELS="claude-sonnet-4.5,claude-opus-4.6"
-DEFAULT_TASK_MODEL="claude-opus-4.5"  # Fallback when planner doesn't assign a model
+DEFAULT_TASK_MODEL="claude-opus-4.6"  # Fallback when planner doesn't assign a model
 
 # ─── Review Settings ─────────────────────────────────────────
 # Post-wave quality gate. Reviewer audits each wave's work against the spec.

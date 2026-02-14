@@ -33,7 +33,7 @@ analyze_dependencies() {
         context_files="${context_files}Also read ${requirements_file} for requirements context. "
     fi
 
-    local models_list="${AVAILABLE_MODELS:-claude-haiku-4.5,claude-sonnet-4,claude-sonnet-4.5,claude-opus-4.5}"
+    local models_list="${AVAILABLE_MODELS:-claude-sonnet-4.5,claude-opus-4.6}"
 
     local steering_hint=""
     if [ -d ".kiro/steering" ] && [ -n "$(ls -A .kiro/steering 2>/dev/null)" ]; then
@@ -66,11 +66,12 @@ Rules for dependency analysis:
 9. Checkpoint tasks (like \"3. Checkpoint - Profiler Complete\") ARE executable and should be included
 
 Rules for model assignment — you MUST assign a \"model\" field to each task.
-Pick ONLY from this exact list: ${models_list}
+Pick ONLY from this EXACT list (do NOT invent or modify model names): ${models_list}
 Guidelines:
 - claude-sonnet-4.5: Simple tasks — standard implementation, writing functions, tests, config, boilerplate, straightforward code
 - claude-opus-4.6: Hard tasks — research, hard algorithms, architectural decisions, tricky debugging, security-critical code, complex multi-file refactoring
 default to claude-opus-4.6 when unsure.
+WARNING: 'claude-opus-4.5' does NOT exist. Only use the exact model names listed above.
 
 Output ONLY a JSON object (no markdown, no explanation) with this structure:
 {
