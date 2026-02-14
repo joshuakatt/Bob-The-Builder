@@ -207,6 +207,27 @@ async def check_btb_file(
     return BtbFileResult(spec_name=spec_name, status=status)
 
 
+def _btb_file_changed(payload: dict[str, Any]) -> bool:
+    """Check if any .btb file was added or modified in the pushed commits.
+
+    Inspects the ``added`` and ``modified`` file lists of each commit in
+    the push payload.  Only root-level ``.btb`` files count (no
+    subdirectory matches).
+
+    Args:
+        payload: Parsed GitHub push webhook payload.
+
+    Returns:
+        True if a .btb file was touched in this push, False otherwise.
+    """
+    for commit in payload.get("commits", []):
+        for path in commit.get("added", []) + commit.get("modified", []):
+            # Root-level .btb file: no "/" in path, ends with .btb
+            if "/" not in path and path.endswith(".btb"):
+                return True
+    return False
+
+
 def _extract_payload_fields(payload: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
     """Extract required fields from a GitHub push webhook payload.
 
@@ -298,6 +319,16 @@ async def handle_webhook(request: web.Request) -> web.Response:
     if branch.startswith("btb-results/"):
         logger.debug("Skipping push to results branch: %s", branch)
         return web.Response(status=200, text="Skipped: results branch")
+
+    # Only trigger when the .btb file was explicitly changed in this push.
+    # This prevents jobs from merges, btb push-backs, and any other push
+    # that doesn't intentionally update the .btb config.
+    if not _btb_file_changed(payload):
+        logger.info(
+            "Skipping push to %s/%s — .btb file not modified in commits",
+            full_name, branch,
+        )
+        return web.Response(status=200, text="Skipped: .btb file not changed")
 
     # Check for .btb file via GitHub API
     github_token = request.app["github_token"]

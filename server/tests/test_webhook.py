@@ -12,6 +12,8 @@ from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
 from server.models import Job
 from server.webhook import (
+    BtbFileResult,
+    _btb_file_changed,
     check_btb_file,
     handle_webhook,
     parse_btb_file,
@@ -35,8 +37,22 @@ def make_push_payload(
     ref: str = "refs/heads/feature/auth",
     after: str = "abc123def456",
     pusher_name: str = "developer1",
+    btb_modified: bool = True,
 ) -> dict:
-    """Create a minimal valid GitHub push webhook payload."""
+    """Create a minimal valid GitHub push webhook payload.
+
+    Args:
+        btb_modified: If True, includes a commit with the .btb file in
+            the modified list (required for the webhook to enqueue a job).
+    """
+    commits = []
+    if btb_modified:
+        commits.append({
+            "id": after,
+            "added": [],
+            "removed": [],
+            "modified": ["run.btb"],
+        })
     return {
         "ref": ref,
         "after": after,
@@ -47,6 +63,7 @@ def make_push_payload(
         "pusher": {
             "name": pusher_name,
         },
+        "commits": commits,
     }
 
 
@@ -309,12 +326,13 @@ class TestHandleWebhookSignature:
         sig = compute_signature(body, secret)
 
         with patch("server.webhook.check_btb_file", new_callable=AsyncMock) as mock_check:
-            mock_check.return_value = "my-spec"
+            mock_check.return_value = BtbFileResult(spec_name="my-spec")
             resp = await client.post(
                 "/webhook",
                 data=body,
                 headers={
                     "X-Hub-Signature-256": sig,
+                    "X-GitHub-Event": "push",
                     "Content-Type": "application/json",
                 },
             )
@@ -333,6 +351,7 @@ class TestHandleWebhookSignature:
             data=body,
             headers={
                 "X-Hub-Signature-256": "sha256=invalid",
+                "X-GitHub-Event": "push",
                 "Content-Type": "application/json",
             },
         )
@@ -349,7 +368,10 @@ class TestHandleWebhookSignature:
         resp = await client.post(
             "/webhook",
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "X-GitHub-Event": "push",
+                "Content-Type": "application/json",
+            },
         )
         assert resp.status == 403
 
@@ -362,7 +384,12 @@ class TestHandleWebhookPayload:
         app = create_test_app(webhook_secret=secret)
         client = await aiohttp_client(app)
 
-        payload = {"ref": "refs/heads/main", "after": "abc123", "pusher": {"name": "dev"}}
+        payload = {
+            "ref": "refs/heads/main",
+            "after": "abc123",
+            "pusher": {"name": "dev"},
+            "commits": [{"id": "abc123", "added": [], "removed": [], "modified": ["run.btb"]}],
+        }
         body = json.dumps(payload).encode()
         sig = compute_signature(body, secret)
 
@@ -371,6 +398,7 @@ class TestHandleWebhookPayload:
             data=body,
             headers={
                 "X-Hub-Signature-256": sig,
+                "X-GitHub-Event": "push",
                 "Content-Type": "application/json",
             },
         )
@@ -385,6 +413,7 @@ class TestHandleWebhookPayload:
             "after": "abc123",
             "repository": {"clone_url": "https://github.com/t/p.git", "full_name": "t/p"},
             "pusher": {"name": "dev"},
+            "commits": [{"id": "abc123", "added": [], "removed": [], "modified": ["run.btb"]}],
         }
         body = json.dumps(payload).encode()
         sig = compute_signature(body, secret)
@@ -394,6 +423,7 @@ class TestHandleWebhookPayload:
             data=body,
             headers={
                 "X-Hub-Signature-256": sig,
+                "X-GitHub-Event": "push",
                 "Content-Type": "application/json",
             },
         )
@@ -408,6 +438,7 @@ class TestHandleWebhookPayload:
             "ref": "refs/heads/main",
             "repository": {"clone_url": "https://github.com/t/p.git", "full_name": "t/p"},
             "pusher": {"name": "dev"},
+            "commits": [{"id": "abc123", "added": [], "removed": [], "modified": ["run.btb"]}],
         }
         body = json.dumps(payload).encode()
         sig = compute_signature(body, secret)
@@ -417,6 +448,7 @@ class TestHandleWebhookPayload:
             data=body,
             headers={
                 "X-Hub-Signature-256": sig,
+                "X-GitHub-Event": "push",
                 "Content-Type": "application/json",
             },
         )
@@ -440,6 +472,7 @@ class TestHandleWebhookLoopPrevention:
             data=body,
             headers={
                 "X-Hub-Signature-256": sig,
+                "X-GitHub-Event": "push",
                 "Content-Type": "application/json",
             },
         )
@@ -460,10 +493,66 @@ class TestHandleWebhookLoopPrevention:
             data=body,
             headers={
                 "X-Hub-Signature-256": sig,
+                "X-GitHub-Event": "push",
                 "Content-Type": "application/json",
             },
         )
         assert resp.status == 200
+        assert len(queue.jobs) == 0
+
+
+class TestBtbFileChanged:
+    """Test _btb_file_changed helper and webhook skip behavior."""
+
+    def test_btb_in_modified(self):
+        payload = {"commits": [{"added": [], "removed": [], "modified": ["run.btb"]}]}
+        assert _btb_file_changed(payload) is True
+
+    def test_btb_in_added(self):
+        payload = {"commits": [{"added": [".btb"], "removed": [], "modified": []}]}
+        assert _btb_file_changed(payload) is True
+
+    def test_no_btb_in_commits(self):
+        payload = {"commits": [{"added": [], "removed": [], "modified": ["README.md"]}]}
+        assert _btb_file_changed(payload) is False
+
+    def test_btb_in_subdirectory_ignored(self):
+        payload = {"commits": [{"added": [], "removed": [], "modified": ["sub/dir/run.btb"]}]}
+        assert _btb_file_changed(payload) is False
+
+    def test_empty_commits(self):
+        payload = {"commits": []}
+        assert _btb_file_changed(payload) is False
+
+    def test_no_commits_key(self):
+        payload = {}
+        assert _btb_file_changed(payload) is False
+
+    def test_btb_only_in_removed_not_triggered(self):
+        payload = {"commits": [{"added": [], "removed": ["run.btb"], "modified": []}]}
+        assert _btb_file_changed(payload) is False
+
+    @pytest.mark.asyncio
+    async def test_push_without_btb_change_skipped(self, aiohttp_client, queue, secret):
+        app = create_test_app(webhook_secret=secret, queue=queue)
+        client = await aiohttp_client(app)
+
+        payload = make_push_payload(btb_modified=False)
+        body = json.dumps(payload).encode()
+        sig = compute_signature(body, secret)
+
+        resp = await client.post(
+            "/webhook",
+            data=body,
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Event": "push",
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status == 200
+        text = await resp.text()
+        assert "not changed" in text
         assert len(queue.jobs) == 0
 
 
@@ -480,12 +569,13 @@ class TestHandleWebhookBtbFile:
         sig = compute_signature(body, secret)
 
         with patch("server.webhook.check_btb_file", new_callable=AsyncMock) as mock_check:
-            mock_check.return_value = "my-feature-spec"
+            mock_check.return_value = BtbFileResult(spec_name="my-feature-spec")
             resp = await client.post(
                 "/webhook",
                 data=body,
                 headers={
                     "X-Hub-Signature-256": sig,
+                    "X-GitHub-Event": "push",
                     "Content-Type": "application/json",
                 },
             )
@@ -510,12 +600,13 @@ class TestHandleWebhookBtbFile:
         sig = compute_signature(body, secret)
 
         with patch("server.webhook.check_btb_file", new_callable=AsyncMock) as mock_check:
-            mock_check.return_value = None
+            mock_check.return_value = BtbFileResult(skip_reason="no .btb file")
             resp = await client.post(
                 "/webhook",
                 data=body,
                 headers={
                     "X-Hub-Signature-256": sig,
+                    "X-GitHub-Event": "push",
                     "Content-Type": "application/json",
                 },
             )
@@ -539,6 +630,7 @@ class TestHandleWebhookBtbFile:
                 data=body,
                 headers={
                     "X-Hub-Signature-256": sig,
+                    "X-GitHub-Event": "push",
                     "Content-Type": "application/json",
                 },
             )
@@ -556,12 +648,13 @@ class TestHandleWebhookBtbFile:
         sig = compute_signature(body, secret)
 
         with patch("server.webhook.check_btb_file", new_callable=AsyncMock) as mock_check:
-            mock_check.return_value = "custom-spec-name"
+            mock_check.return_value = BtbFileResult(spec_name="custom-spec-name")
             resp = await client.post(
                 "/webhook",
                 data=body,
                 headers={
                     "X-Hub-Signature-256": sig,
+                    "X-GitHub-Event": "push",
                     "Content-Type": "application/json",
                 },
             )
