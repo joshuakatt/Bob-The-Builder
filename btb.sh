@@ -291,6 +291,18 @@ spawn_worker() {
             # Python pip cache
             export PIP_CACHE_DIR="${SHARED_BUILD_CACHE_DIR_ABS}/pip-cache"
             mkdir -p "$CARGO_TARGET_DIR" "$GRADLE_USER_HOME" "$GOCACHE" "$PIP_CACHE_DIR" 2>/dev/null || true
+
+            # Node.js: symlink node_modules from cache (or main repo) into worktree.
+            # Unlike Rust/Go which have env-var redirects, Node requires node_modules
+            # to physically exist in the project tree.
+            if [ -f "package.json" ] && [ ! -d "node_modules" ]; then
+                _main_repo_root=$(git worktree list 2>/dev/null | head -1 | awk '{print $1}')
+                if [ -d "${SHARED_BUILD_CACHE_DIR_ABS}/node_modules" ]; then
+                    ln -sf "${SHARED_BUILD_CACHE_DIR_ABS}/node_modules" node_modules 2>/dev/null || true
+                elif [ -n "$_main_repo_root" ] && [ -d "${_main_repo_root}/node_modules" ]; then
+                    ln -sf "${_main_repo_root}/node_modules" node_modules 2>/dev/null || true
+                fi
+            fi
         fi
 
         HEARTBEAT_FILE="$heartbeat_file" \
@@ -700,6 +712,97 @@ fi
 # steering docs from the spec + codebase before any task execution.
 # This gives all agents persistent project context.
 ensure_steering_docs "$SPEC_DIR"
+
+# ─── Phase 0.5: Dependency Installation ─────────────────────
+# Auto-detect project dependencies and install them once on the main
+# repo before any workers spawn. This ensures worktrees (and the
+# reviewer) have access to installed packages.
+#
+# Supports: Node.js (pnpm/yarn/npm/bun), Python (pip/poetry),
+#           Rust (cargo — build cache handled separately),
+#           Go (go mod download).
+#
+# Each ecosystem is detected by its lockfile or manifest. Install
+# runs only if the dependency directory is missing.
+install_project_deps() {
+    local installed=0
+
+    # ── Node.js ──────────────────────────────────────────────
+    if [ -f "package.json" ] && [ ! -d "node_modules" ]; then
+        local pkg_mgr=""
+        local install_cmd=""
+        if [ -f "pnpm-lock.yaml" ]; then
+            pkg_mgr="pnpm"
+            install_cmd="pnpm install --frozen-lockfile"
+        elif [ -f "yarn.lock" ]; then
+            pkg_mgr="yarn"
+            install_cmd="yarn install --frozen-lockfile"
+        elif [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then
+            pkg_mgr="bun"
+            install_cmd="bun install --frozen-lockfile"
+        elif [ -f "package-lock.json" ]; then
+            pkg_mgr="npm"
+            install_cmd="npm ci"
+        else
+            # No lockfile — use npm install as fallback
+            pkg_mgr="npm"
+            install_cmd="npm install"
+        fi
+
+        if command -v "$pkg_mgr" &>/dev/null; then
+            echo -e "  \033[37m·\033[0m  installing node dependencies (${pkg_mgr})..."
+            if $install_cmd >/dev/null 2>&1; then
+                echo -e "  \033[37m✓\033[0m  node dependencies installed"
+                installed=$((installed + 1))
+
+                # Cache node_modules in shared build cache for worktrees
+                if [ -n "${SHARED_BUILD_CACHE_DIR_ABS:-}" ] && [ -d "node_modules" ]; then
+                    local cache_nm="${SHARED_BUILD_CACHE_DIR_ABS}/node_modules"
+                    if [ ! -d "$cache_nm" ]; then
+                        cp -a node_modules "$cache_nm" 2>/dev/null || true
+                    fi
+                fi
+            else
+                echo -e "  \033[93m⚠\033[0m  node dependency install failed (${pkg_mgr}) — agents will handle it"
+            fi
+        else
+            echo -e "  \033[93m⚠\033[0m  ${pkg_mgr} not found — skipping node dependency install"
+        fi
+    fi
+
+    # ── Python ───────────────────────────────────────────────
+    if [ -f "requirements.txt" ] && [ ! -d ".venv" ] && command -v python3 &>/dev/null; then
+        echo -e "  \033[37m·\033[0m  installing python dependencies..."
+        if python3 -m venv .venv >/dev/null 2>&1 && .venv/bin/pip install -r requirements.txt >/dev/null 2>&1; then
+            echo -e "  \033[37m✓\033[0m  python dependencies installed"
+            installed=$((installed + 1))
+        else
+            echo -e "  \033[93m⚠\033[0m  python dependency install failed — agents will handle it"
+        fi
+    elif [ -f "pyproject.toml" ] && [ ! -d ".venv" ]; then
+        if command -v poetry &>/dev/null; then
+            echo -e "  \033[37m·\033[0m  installing python dependencies (poetry)..."
+            if poetry install >/dev/null 2>&1; then
+                echo -e "  \033[37m✓\033[0m  python dependencies installed"
+                installed=$((installed + 1))
+            else
+                echo -e "  \033[93m⚠\033[0m  poetry install failed — agents will handle it"
+            fi
+        fi
+    fi
+
+    # ── Go ───────────────────────────────────────────────────
+    if [ -f "go.mod" ] && command -v go &>/dev/null; then
+        echo -e "  \033[37m·\033[0m  downloading go modules..."
+        if go mod download >/dev/null 2>&1; then
+            echo -e "  \033[37m✓\033[0m  go modules downloaded"
+            installed=$((installed + 1))
+        fi
+    fi
+
+    [ "$installed" -gt 0 ] && echo ""
+}
+install_project_deps
 
 # ─── Pre-TUI banner (shown briefly before TUI takes over) ───
 echo ""
