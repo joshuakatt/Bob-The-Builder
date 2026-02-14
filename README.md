@@ -7,60 +7,63 @@ Each task gets its own worktree and agent process. A planner assigns models per 
 ## Quick Start
 
 ```bash
-# 1. Clone btb anywhere
-git clone https://github.com/joshuakatt/Bob-The-Builder.git ~/btb
+# Clone btb anywhere on your machine
+git clone https://github.com/joshuakatt/Bob-The-Builder.git
 
-# 2. cd into your project
-cd ~/my-project
+# cd into your project repo
+cd your-project
 
-# 3. Run setup (validates prereqs, installs agents)
-~/btb/setup.sh
+# Run setup (validates prereqs, installs agent configs)
+path/to/Bob-The-Builder/setup.sh
 
-# 4. Run btb on a spec
-~/btb/btb.sh my-feature
+# Run btb on a spec
+path/to/Bob-The-Builder/btb.sh spec-name
 ```
 
-That's it. btb lives in its own directory and operates on whatever repo you're in.
+btb lives in its own directory and operates on whatever repo you're in.
 
 ## Prerequisites
 
+- **bash** 3.2+ (macOS default works, on Windows use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) or Git Bash)
 - **kiro-cli** — installed and authenticated
 - **git** — any recent version
 - **python3** — for DAG analysis
-- **perl** — for TUI keyboard input (optional, use `--no-tui` without it)
+- **perl** — optional, for TUI keyboard input (use `--no-tui` without it)
 
-Run `setup.sh` in your target repo to validate prerequisites and install agent configs:
+Run `setup.sh` in your target repo to validate all prerequisites and install agent configs:
 
 ```sh
-/path/to/btb/setup.sh
+path/to/Bob-The-Builder/setup.sh
 ```
+
+> **Windows note:** btb is a bash tool. On Windows, run it inside WSL or Git Bash — not PowerShell or cmd.
 
 ## Usage
 
 ```sh
-# By spec name (looks in .kiro/specs/<name>)
-./btb.sh my-feature
+# By spec name (looks in .kiro/specs/<name>/)
+btb.sh spec-name
 
 # By explicit path
-./btb.sh --spec-dir path/to/spec
+btb.sh --spec-dir path/to/spec
 
-# Sequential mode (one task at a time)
-./btb.sh my-feature --sequential
+# Sequential mode (one task at a time, no DAG)
+btb.sh spec-name --sequential
 
 # Dry run (analyze DAG only, no execution)
-./btb.sh my-feature --dry-run
+btb.sh spec-name --dry-run
 
 # Skip the review gate
-./btb.sh my-feature --no-review
+btb.sh spec-name --no-review
 
 # Plain log output instead of TUI
-./btb.sh my-feature --no-tui
+btb.sh spec-name --no-tui
 
 # Set max parallel workers
-./btb.sh my-feature --max-parallel 6
+btb.sh spec-name --max-parallel 6
 
 # Clean up all worktrees, branches, and locks
-./btb.sh --cleanup
+btb.sh --cleanup
 ```
 
 ## Spec Structure
@@ -68,7 +71,7 @@ Run `setup.sh` in your target repo to validate prerequisites and install agent c
 Your spec directory needs at minimum a `tasks.md`. The planner also reads `design.md` and `requirements.md` if present.
 
 ```
-.kiro/specs/my-feature/
+.kiro/specs/spec-name/
 ├── tasks.md          # required — task list with checkboxes
 ├── design.md         # recommended — architecture and implementation guidance
 └── requirements.md   # recommended — acceptance criteria
@@ -86,6 +89,14 @@ Tasks in `tasks.md` use this format:
 ```
 
 The planner analyzes dependencies between tasks and groups them into waves for parallel execution. Subtasks (1.1, 1.2, etc.) are the units of work — parent tasks auto-complete when all their subtasks finish.
+
+## How It Works
+
+1. **Analysis** — The planner reads your tasks and design docs, builds a dependency DAG, and assigns models per task
+2. **Execution** — Tasks spawn as workers in isolated git worktrees. A task becomes ready once all its dependencies are synced to main
+3. **Sync** — Completed tasks merge back to main immediately (serialized by lock). Merge conflicts are resolved by a dedicated resolver agent
+4. **Review** — After a batch of tasks sync, the reviewer audits the work. If issues are found, a fix agent addresses them
+5. **Completion** — Parent tasks auto-complete when all subtasks finish. The run ends when all tasks are resolved
 
 ## Configuration
 
@@ -131,7 +142,7 @@ The reviewer audits completed work against the spec after every batch of synced 
 | `STALE_THRESHOLD`         | `600`   | Seconds of inactivity before killing a worker |
 | `RATE_LIMIT_PAUSE`        | `3`     | Seconds between spawning workers              |
 
-The stale threshold is activity-based, not wall-clock. A worker is considered active if its log file is growing, it has descendant processes running anywhere in its process tree (e.g. a long build, test suite, or training script), or the process is alive. Tasks can run for hours as long as something is happening — even deeply nested child processes like `rustc` invoked by `cargo` invoked by `kiro-cli` are detected.
+The stale threshold is activity-based, not wall-clock. A worker is considered active if its log file is growing, it has descendant processes running anywhere in its process tree (e.g. a long build or test suite), or the process is alive.
 
 ### Shared Build Cache
 
@@ -139,16 +150,7 @@ The stale threshold is activity-based, not wall-clock. A worker is considered ac
 | ------------------------ | ----------------------- | ---------------------------------------------------- |
 | `SHARED_BUILD_CACHE_DIR` | `../.ralph-build-cache` | Shared build artifact directory across all worktrees |
 
-When running parallel tasks, each git worktree would normally get its own build artifacts (Rust `target/`, Go cache, Gradle home, etc.). For large projects this can consume tens of GB and fill the disk. The shared build cache redirects these via environment variables:
-
-- `CARGO_TARGET_DIR` — Rust builds share one `target/` directory
-- `GRADLE_USER_HOME` — Gradle builds share one cache
-- `GOPATH` / `GOCACHE` — Go builds share one cache
-- `PIP_CACHE_DIR` — Python pip downloads share one cache
-
-Set `SHARED_BUILD_CACHE_DIR=""` to disable this behavior.
-
-When a task fails and retries, the failure context (last 30 lines of output, exit code, failure type) is injected into the retry prompt so the agent can learn from the previous attempt.
+Parallel worktrees normally duplicate build artifacts (Rust `target/`, Go cache, Gradle home, etc.). The shared cache redirects these via environment variables (`CARGO_TARGET_DIR`, `GRADLE_USER_HOME`, `GOPATH`/`GOCACHE`, `PIP_CACHE_DIR`). Set to empty string to disable.
 
 ## Steering Docs
 
@@ -156,66 +158,37 @@ On first run, if your repo doesn't have `.kiro/steering/` docs, they're auto-gen
 
 If you already have steering docs, they're used as-is.
 
-## How It Works
-
-1. **Analysis** — The planner agent reads your tasks and design docs, builds a dependency DAG, and assigns models per task
-2. **Execution** — Tasks are spawned as workers in isolated git worktrees. A task becomes ready the moment all its dependencies are synced to main
-3. **Sync** — Completed tasks are merged back to main immediately (serialized by lock). Merge conflicts are resolved by a dedicated resolver agent
-4. **Review** — After a batch of tasks sync, the reviewer audits the work. If issues are found, a fix agent addresses them
-5. **Completion** — Parent tasks auto-complete when all subtasks finish. The run ends when all tasks are resolved
-
 ## Logs
 
 All logs go to `.ralph-logs/` in your repo:
 
-- `debug_<timestamp>.log` — orchestrator debug log (scheduler decisions, spawn/sync events)
-- `task_<id>_<timestamp>.log` — per-task agent output (full kiro-cli conversation)
+- `debug_<timestamp>.log` — orchestrator debug log
+- `task_<id>_<timestamp>.log` — per-task agent output
 - `dag_<timestamp>.json` — the dependency DAG produced by the planner
-- `dag_validation_<timestamp>.log` — diagnostic info when DAG validation fails (shows missing tasks)
+- `dag_validation_<timestamp>.log` — diagnostic info when DAG validation fails
 - `steering_<timestamp>.log` — steering doc generation output
 
 ## DAG Validation
 
-The planner analyzes your tasks and builds a dependency graph. For large specs (100+ tasks), the planner might miss some tasks due to context window limitations or misunderstanding the structure.
+For large specs (100+ tasks), the planner might miss some tasks. btb handles this automatically:
 
-**Automatic repair:** When the planner misses tasks, btb automatically detects the gap and asks the planner to produce a patch DAG for just the missing tasks. This repair loop runs up to `MAX_DAG_REPAIR_ATTEMPTS` times (default: 3). If tasks are still missing after all attempts, they're appended as sequential fallback waves so no task is ever lost.
+1. Compares DAG task count against incomplete tasks in `tasks.md`
+2. If tasks are missing → asks the planner to produce a patch for only the missing ones
+3. Repeats up to `MAX_DAG_REPAIR_ATTEMPTS` times (default: 3)
+4. Any remaining stragglers get appended as sequential waves — no task is ever lost
 
-The repair flow:
-
-1. Initial DAG analysis
-2. Compare DAG task count against incomplete tasks in `tasks.md`
-3. If tasks are missing → ask planner to produce a patch for only the missing ones
-4. Merge patch into existing DAG
-5. Repeat until complete or max attempts reached
-6. Any remaining stragglers get appended as sequential waves
-
-**Manual validation** with the included script:
+You can also validate manually:
 
 ```sh
-./validate-dag.sh my-feature
-# or with a specific DAG file
-./validate-dag.sh my-feature .ralph-logs/dag_20250208_143022.json
+./validate-dag.sh spec-name
+./validate-dag.sh spec-name .ralph-logs/dag_20250208_143022.json
 ```
 
-This shows exactly which tasks are missing from the DAG.
-
-**If you still see issues:**
-
-1. **Use sequential mode** — bypasses DAG analysis entirely:
-
-   ```sh
-   ./btb.sh my-feature --sequential
-   ```
-
-2. **Break into phases** — split large specs into smaller ones
-
-3. **Check formatting** — ensure all tasks use standard `- [ ]` syntax
-
-4. **Review the DAG** — check `.ralph-logs/dag_<timestamp>.json` to see what the planner understood
+If you still see issues, try `--sequential` mode (bypasses DAG entirely), break large specs into smaller ones, or check `.ralph-logs/dag_*.json` to see what the planner understood.
 
 ## Cloud Deployment
 
-The `deploy/` directory has everything you need to run btb as a service on an EC2 instance (or similar). It includes a webhook server that listens for GitHub push events and automatically runs btb on branches that contain a `.btb` config file.
+The `deploy/` directory has everything you need to run btb as a service on a Linux server. It includes a webhook server that listens for GitHub push events and automatically runs btb on branches containing a `.btb` config file.
 
 ### Quick setup
 
@@ -229,7 +202,7 @@ The `deploy/` directory has everything you need to run btb as a service on an EC
 
 3. Edit `/etc/btb-service/config.env` with your webhook secret, GitHub token, TLS certs, and paths (see `deploy/config.env.example` for all options)
 
-4. Set up the GitHub webhook pointing to your instance:
+4. Set up the GitHub webhook:
 
    ```sh
    bash deploy/setup-webhook.sh
@@ -260,3 +233,7 @@ If a run is interrupted or you need to reset:
 ```
 
 This removes all worktrees, ralph branches, and lock files.
+
+## License
+
+[MIT](LICENSE)
