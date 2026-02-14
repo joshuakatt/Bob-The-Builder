@@ -17,7 +17,7 @@
 
 [Unit]
 Description=BTB Service — Bob the Builder Team Service
-Documentation=https://github.com/your-org/btb
+Documentation=https://github.com/joshkatt/Bob
 After=network.target
 Wants=network-online.target
 

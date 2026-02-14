@@ -8,7 +8,7 @@ Each task gets its own worktree and agent process. A planner assigns models per 
 
 ```bash
 # 1. Clone btb anywhere
-git clone <btb-repo-url> ~/btb
+git clone https://github.com/joshkatt/Bob.git ~/btb
 
 # 2. cd into your project
 cd ~/my-project
@@ -95,18 +95,18 @@ All settings live in `config.sh`. Most can be overridden via environment variabl
 
 | Setting                   | Default | Description                                           |
 | ------------------------- | ------- | ----------------------------------------------------- |
-| `MAX_PARALLEL`            | `4`     | Total concurrent agent processes (workers + reviewer) |
+| `MAX_PARALLEL`            | `6`     | Total concurrent agent processes (workers + reviewer) |
 | `REVIEW_RESERVED_SLOTS`   | `1`     | Slots reserved for the reviewer agent                 |
 | `MAX_ITERATIONS_PER_TASK` | `20`    | Max agent iterations per task before giving up        |
 
-Effective worker slots = `MAX_PARALLEL` - `REVIEW_RESERVED_SLOTS`. With defaults, that's 3 workers + 1 reviewer.
+Effective worker slots = `MAX_PARALLEL` - `REVIEW_RESERVED_SLOTS`. With defaults, that's 5 workers + 1 reviewer.
 
 ### Models
 
 | Setting              | Default                             | Description                                  |
 | -------------------- | ----------------------------------- | -------------------------------------------- |
 | `AVAILABLE_MODELS`   | `claude-sonnet-4.5,claude-opus-4.6` | Models the planner can assign to tasks       |
-| `DEFAULT_TASK_MODEL` | `claude-opus-4.5`                   | Fallback when planner doesn't assign a model |
+| `DEFAULT_TASK_MODEL` | `claude-opus-4.6`                   | Fallback when planner doesn't assign a model |
 | `STEERING_MODEL`     | `claude-opus-4.6`                   | Model used to generate steering docs         |
 | `REVIEWER_MODEL`     | `claude-opus-4.6`                   | Model used for the review gate               |
 
@@ -212,6 +212,44 @@ This shows exactly which tasks are missing from the DAG.
 3. **Check formatting** — ensure all tasks use standard `- [ ]` syntax
 
 4. **Review the DAG** — check `.ralph-logs/dag_<timestamp>.json` to see what the planner understood
+
+## Cloud Deployment
+
+The `deploy/` directory has everything you need to run btb as a service on an EC2 instance (or similar). It includes a webhook server that listens for GitHub push events and automatically runs btb on branches that contain a `.btb` config file.
+
+### Quick setup
+
+1. Provision a fresh Amazon Linux 2023 or Ubuntu instance:
+
+   ```sh
+   sudo bash deploy/provision.sh
+   ```
+
+2. Copy the btb code to `/opt/btb` on the instance
+
+3. Edit `/etc/btb-service/config.env` with your webhook secret, GitHub token, TLS certs, and paths (see `deploy/config.env.example` for all options)
+
+4. Set up the GitHub webhook pointing to your instance:
+
+   ```sh
+   bash deploy/setup-webhook.sh
+   ```
+
+5. Start the service:
+   ```sh
+   sudo systemctl start btb-service
+   ```
+
+The service exposes a dashboard at `https://<your-host>:8443/` showing job status, queue, and logs.
+
+### What's in `deploy/`
+
+| File                  | Purpose                                              |
+| --------------------- | ---------------------------------------------------- |
+| `provision.sh`        | Installs all dependencies on a fresh instance        |
+| `btb-service.service` | systemd unit file (auto-restart, security hardening) |
+| `config.env.example`  | Annotated config template                            |
+| `setup-webhook.sh`    | Creates the GitHub webhook via API                   |
 
 ## Cleanup
 

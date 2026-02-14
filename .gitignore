@@ -1,3 +1,38 @@
+# btb runtime artifacts
 .ralph-logs/
 .ralph-worktrees/
+.ralph-build-cache/
+.ralph-merge-lock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.hypothesis/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Specs (user-specific, not part of btb itself)
+.kiro/specs/
+
+# Build artifacts (common across languages)
+target/
+build/
+dist/
+out/
+.next/
+node_modules/
+.cargo/
+*.class
+bin/
+obj/

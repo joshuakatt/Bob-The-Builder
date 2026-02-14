@@ -48,7 +48,7 @@ STEERING_MODEL="${STEERING_MODEL:-claude-opus-4.6}" # Model for steering generat
 
 # ─── Model Settings ──────────────────────────────────────────
 # Available models for the planner to choose from (kiro-cli --model values).
-# Valid models: auto, claude-haiku-4.5, claude-sonnet-4, claude-sonnet-4.5, claude-opus-4.5, claude-opus-4.6
+# Valid models: auto, claude-haiku-4.5, claude-sonnet-4, claude-sonnet-4.5, claude-opus-4.6
 # Ordered cheapest → most expensive. The planner assigns one per task.
 AVAILABLE_MODELS="claude-sonnet-4.5,claude-opus-4.6"
 DEFAULT_TASK_MODEL="claude-opus-4.6"  # Fallback when planner doesn't assign a model

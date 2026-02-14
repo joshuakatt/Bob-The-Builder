@@ -143,8 +143,8 @@ for spec_dir in .kiro/specs/*/; do
     [ -d "$spec_dir" ] || continue
     if [ -f "${spec_dir}tasks.md" ]; then
         spec_name=$(basename "$spec_dir")
-        tasks=$(awk '/^[[:space:]]+-[[:space:]]\[.\][[:space:]][0-9]+\.[0-9]+/ { n++ } END { print n+0 }' "${spec_dir}tasks.md" 2>/dev/null)
-        done_count=$(awk '/^[[:space:]]+-[[:space:]]\[x\][[:space:]][0-9]+\.[0-9]+/ { n++ } END { print n+0 }' "${spec_dir}tasks.md" 2>/dev/null)
+        tasks=$(awk '/^[[:space:]]*-[[:space:]]\[.\][[:space:]]*\*?[[:space:]]*[0-9]+\.[0-9]+/ { n++ } END { print n+0 }' "${spec_dir}tasks.md" 2>/dev/null)
+        done_count=$(awk '/^[[:space:]]*-[[:space:]]\[x\][[:space:]]*\*?[[:space:]]*[0-9]+\.[0-9]+/ { n++ } END { print n+0 }' "${spec_dir}tasks.md" 2>/dev/null)
         echo -e "  \033[37m·\033[0m  spec: \033[1m${spec_name}\033[0m (${done_count}/${tasks} tasks done)"
         specs_found=$((specs_found + 1))
     fi
