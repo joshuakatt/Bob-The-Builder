@@ -143,8 +143,32 @@ for spec_dir in .kiro/specs/*/; do
     [ -d "$spec_dir" ] || continue
     if [ -f "${spec_dir}tasks.md" ]; then
         spec_name=$(basename "$spec_dir")
-        tasks=$(awk '/^[[:space:]]*-[[:space:]]\[.\][[:space:]]*\*?[[:space:]]*[0-9]+\.[0-9]+/ { n++ } END { print n+0 }' "${spec_dir}tasks.md" 2>/dev/null)
-        done_count=$(awk '/^[[:space:]]*-[[:space:]]\[x\][[:space:]]*\*?[[:space:]]*[0-9]+\.[0-9]+/ { n++ } END { print n+0 }' "${spec_dir}tasks.md" 2>/dev/null)
+        tasks=$(python3 -c "
+import re, sys
+with open(sys.argv[1]) as f: lines = f.readlines()
+subtask_ids, parents = [], set()
+for line in lines:
+    m = re.match(r'^[\s]*-\s+\[.\]\s+(\d+)\.(\d+\S*)', line)
+    if m and m.group(2) and m.group(2)[0].isdigit():
+        subtask_ids.append(m.group(1)+'.'+m.group(2)); parents.add(m.group(1))
+for line in lines:
+    m = re.match(r'^-\s+\[.\]\s+(\d+)\.\s', line)
+    if m and m.group(1) not in parents: subtask_ids.append(m.group(1))
+print(len(subtask_ids))
+" "${spec_dir}tasks.md" 2>/dev/null)
+        done_count=$(python3 -c "
+import re, sys
+with open(sys.argv[1]) as f: lines = f.readlines()
+subtask_ids, parents = [], set()
+for line in lines:
+    m = re.match(r'^[\s]*-\s+\[x\]\s+(\d+)\.(\d+\S*)', line)
+    if m and m.group(2) and m.group(2)[0].isdigit():
+        subtask_ids.append(m.group(1)+'.'+m.group(2)); parents.add(m.group(1))
+for line in lines:
+    m = re.match(r'^-\s+\[x\]\s+(\d+)\.\s', line)
+    if m and m.group(1) not in parents: subtask_ids.append(m.group(1))
+print(len(subtask_ids))
+" "${spec_dir}tasks.md" 2>/dev/null)
         echo -e "  \033[37m·\033[0m  spec: \033[1m${spec_name}\033[0m (${done_count}/${tasks} tasks done)"
         specs_found=$((specs_found + 1))
     fi

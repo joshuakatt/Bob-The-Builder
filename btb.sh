@@ -806,6 +806,26 @@ install_project_deps() {
 }
 install_project_deps
 
+# ─── Phase 0.6: Credential Check ────────────────────────────
+# Verify kiro-cli is authenticated before spawning workers. If credentials
+# are expired, every worker will fail immediately and spawn retry loops
+# that consume all system resources. Fail fast with a clear message instead.
+_check_kiro_credentials() {
+    if ! kiro-cli auth status >/dev/null 2>&1; then
+        echo ""
+        echo -e "  \033[91m✗  kiro-cli is not authenticated.\033[0m"
+        echo ""
+        echo "  Workers need valid credentials to run. Please authenticate:"
+        echo ""
+        echo "    kiro-cli login --use-device-flow"
+        echo ""
+        echo "  Then re-run btb."
+        exit 1
+    fi
+    echo -e "  \033[37m✓\033[0m  kiro-cli authenticated"
+}
+_check_kiro_credentials
+
 # ─── Pre-TUI banner (shown briefly before TUI takes over) ───
 echo ""
 echo -e "  \033[1m\033[97mBOB THE BUILDER\033[0m \033[2mconcurrent task orchestrator\033[0m"
