@@ -377,9 +377,9 @@ exit $WORKER_EXIT
                         "commands": [
                             f"dd if={remote_log} bs=1 skip={offset} 2>/dev/null || true"
                         ],
-                        "executionTimeout": ["10"],
+                        "executionTimeout": ["30"],
                     },
-                    TimeoutSeconds=15,
+                    TimeoutSeconds=30,
                 )
                 cmd_id = resp["Command"]["CommandId"]
 
@@ -404,7 +404,7 @@ exit $WORKER_EXIT
                         offset += len(output.encode("utf-8", errors="replace"))
 
             except Exception as e:
-                logger.debug("Log stream fetch error for job %s: %s", job.id, e)
+                logger.warning("Log stream fetch error for job %s: %s", job.id, e)
 
             await asyncio.sleep(5)  # Fetch every 5 seconds
 
