@@ -252,6 +252,12 @@ JOBS_DIR="/var/btb/jobs"
 LOGS_DIR="/var/btb/logs"
 JOB_DIR="${{JOBS_DIR}}/${{JOB_ID}}"
 REPO_DIR="${{JOB_DIR}}/repo"
+OUTPUT_LOG="${{JOB_DIR}}/output.log"
+
+# All output goes to both stdout (SSM captures) and the output log
+# (coordinator fetches for live streaming)
+exec > >(tee -a "${{JOB_DIR}}/output.log") 2>&1
+mkdir -p "${{JOB_DIR}}"
 
 echo "[$(date -Iseconds)] Starting btb job ${{JOB_ID}} spec=${{SPEC_NAME}}"
 
@@ -329,6 +335,61 @@ echo "[$(date -Iseconds)] Job complete. Shutting down worker."
 # Stop this instance (the coordinator will see it transition to "stopped")
 sudo shutdown now
 """
+
+    async def _stream_remote_log(self, job: Job, local_log_path: str) -> None:
+        """Background task that fetches output from the worker and writes locally.
+
+        Periodically runs an SSM command to read new bytes from the worker's
+        output.log and appends them to the local typescript.log so the
+        TUI streamer can pick them up.
+        """
+        ssm = self._get_ssm_client()
+        offset = 0
+        remote_log = f"/var/btb/jobs/{job.id}/output.log"
+
+        from pathlib import Path
+        Path(local_log_path).parent.mkdir(parents=True, exist_ok=True)
+
+        while not self._stop_requested:
+            try:
+                # Use dd to read from offset, avoids re-reading the whole file
+                resp = ssm.send_command(
+                    InstanceIds=[self._worker_instance_id],
+                    DocumentName="AWS-RunShellScript",
+                    Parameters={
+                        "commands": [
+                            f"dd if={remote_log} bs=1 skip={offset} 2>/dev/null || true"
+                        ],
+                        "executionTimeout": ["10"],
+                    },
+                    TimeoutSeconds=15,
+                )
+                cmd_id = resp["Command"]["CommandId"]
+
+                # Wait for the command to complete
+                for _ in range(10):
+                    await asyncio.sleep(1)
+                    try:
+                        inv = ssm.get_command_invocation(
+                            CommandId=cmd_id,
+                            InstanceId=self._worker_instance_id,
+                        )
+                        if inv["Status"] in ("Success", "Failed", "Cancelled", "TimedOut"):
+                            break
+                    except Exception:
+                        break
+
+                if inv.get("Status") == "Success":
+                    output = inv.get("StandardOutputContent", "")
+                    if output:
+                        with open(local_log_path, "ab") as f:
+                            f.write(output.encode("utf-8", errors="replace"))
+                        offset += len(output.encode("utf-8", errors="replace"))
+
+            except Exception as e:
+                logger.debug("Log stream fetch error for job %s: %s", job.id, e)
+
+            await asyncio.sleep(5)  # Fetch every 5 seconds
 
     async def _monitor_command(self, command_id: str, job: Job) -> tuple[str, int]:
         """Monitor an SSM command until completion.
@@ -456,8 +517,27 @@ sudo shutdown now
                 self._complete_job(job, "failed", -1, error)
                 return -1
 
+            # Step 3.5: Start background log streaming
+            import os
+            local_typescript = os.path.join(
+                str(self._queue.jobs_dir), job.id, "typescript.log"
+            )
+            stream_task = asyncio.create_task(
+                self._stream_remote_log(job, local_typescript)
+            )
+
             # Step 4: Monitor
-            status, exit_code = await self._monitor_command(command_id, job)
+            try:
+                status, exit_code = await self._monitor_command(command_id, job)
+            finally:
+                # Stop the log streamer
+                self._stop_requested = True
+                stream_task.cancel()
+                try:
+                    await stream_task
+                except asyncio.CancelledError:
+                    pass
+                self._stop_requested = False
 
             if status == "timeout":
                 error = f"Job timed out after {self._job_timeout}s"
