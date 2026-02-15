@@ -234,60 +234,56 @@ class EC2JobExecutor:
         retry_of = job.retry_of or ""
 
         return f"""#!/bin/bash
-set -euo pipefail
-
-export HOME=/opt/btb
-export PATH="/opt/btb/.local/bin:/usr/local/bin:$PATH"
+set +e
 
 JOB_ID='{job_id}'
-REPO_URL='{repo_url}'
-BRANCH='{branch}'
-COMMIT_SHA='{commit_sha}'
-SPEC_NAME='{spec_name}'
-GITHUB_TOKEN='{github_token}'
-BTB_PATH='{btb_path}'
-RETRY_OF='{retry_of}'
-
 JOBS_DIR="/var/btb/jobs"
 LOGS_DIR="/var/btb/logs"
 JOB_DIR="${{JOBS_DIR}}/${{JOB_ID}}"
+WORKER_SCRIPT="/tmp/btb-worker-${{JOB_ID}}.sh"
+
+# Create dirs as root (owns /var/btb), then hand off to ec2-user
+rm -rf "${{JOB_DIR}}" 2>/dev/null || true
+mkdir -p "${{JOB_DIR}}" "${{LOGS_DIR}}"
+chown -R ec2-user:ec2-user "${{JOB_DIR}}" "${{LOGS_DIR}}"
+
+# Write the worker script to a temp file (avoids heredoc/su quoting issues)
+cat > "${{WORKER_SCRIPT}}" << 'BTBEOF'
+#!/bin/bash
+set +e
+
+export HOME=/home/ec2-user
+export PATH="/home/ec2-user/.local/bin:/opt/btb/.local/bin:/usr/local/bin:$PATH"
+
+# Read job params from environment
+JOBS_DIR="/var/btb/jobs"
+LOGS_DIR="/var/btb/logs"
+JOB_DIR="${{JOBS_DIR}}/${{BTB_JOB_ID}}"
 REPO_DIR="${{JOB_DIR}}/repo"
 OUTPUT_LOG="${{JOB_DIR}}/output.log"
 
-# All output goes to both stdout (SSM captures) and the output log
-# (coordinator fetches for live streaming)
-exec > >(tee -a "${{JOB_DIR}}/output.log") 2>&1
-mkdir -p "${{JOB_DIR}}"
+exec > >(tee -a "${{OUTPUT_LOG}}") 2>&1
 
-echo "[$(date -Iseconds)] Starting btb job ${{JOB_ID}} spec=${{SPEC_NAME}}"
+echo "[$(date -Iseconds)] Starting btb job ${{BTB_JOB_ID}} spec=${{BTB_SPEC_NAME}}"
 
-# Clean stale workdir
-rm -rf "${{JOB_DIR}}" 2>/dev/null || true
-mkdir -p "${{JOB_DIR}}"
-
-# Clone with auth
-AUTH_URL=$(echo "${{REPO_URL}}" | sed "s|https://github.com/|https://x-access-token:${{GITHUB_TOKEN}}@github.com/|")
-git clone --branch "${{BRANCH}}" "${{AUTH_URL}}" "${{REPO_DIR}}"
+AUTH_URL=$(echo "${{BTB_REPO_URL}}" | sed "s|https://github.com/|https://x-access-token:${{BTB_GITHUB_TOKEN}}@github.com/|")
+git clone --branch "${{BTB_BRANCH}}" "${{AUTH_URL}}" "${{REPO_DIR}}"
 cd "${{REPO_DIR}}"
-git checkout "${{COMMIT_SHA}}"
+git checkout "${{BTB_COMMIT_SHA}}"
 
-# Handle retry continuation
-if [ -n "${{RETRY_OF}}" ]; then
-    RESULTS_BRANCH="btb-results/${{BRANCH}}"
+if [ -n "${{BTB_RETRY_OF}}" ]; then
+    RESULTS_BRANCH="btb-results/${{BTB_BRANCH}}"
     if git ls-remote --heads origin "${{RESULTS_BRANCH}}" | grep -q .; then
         git fetch origin "${{RESULTS_BRANCH}}" || true
         git merge FETCH_HEAD --no-edit --allow-unrelated-histories || git merge --abort || true
     fi
 fi
 
-# Run setup
 "${{BTB_PATH}}/setup.sh" || true
 
-# Run btb
 EXIT_CODE=0
-timeout {self._job_timeout} "${{BTB_PATH}}/btb.sh" "${{SPEC_NAME}}" --no-tui || EXIT_CODE=$?
+timeout ${{BTB_TIMEOUT}} "${{BTB_PATH}}/btb.sh" "${{BTB_SPEC_NAME}}" --no-tui || EXIT_CODE=$?
 
-# Determine status
 if [ "${{EXIT_CODE}}" -eq 0 ]; then
     STATUS="completed"
 elif [ "${{EXIT_CODE}}" -eq 124 ]; then
@@ -298,42 +294,63 @@ fi
 
 echo "[$(date -Iseconds)] btb exited with code ${{EXIT_CODE}} status=${{STATUS}}"
 
-# Push results to btb-results/{{branch}}
 git add -A
 if ! git diff --cached --quiet; then
-    git commit -m "btb results for ${{SPEC_NAME}} [job: ${{JOB_ID}}]"
+    git commit -m "btb results for ${{BTB_SPEC_NAME}} [job: ${{BTB_JOB_ID}}]"
 fi
-git push --force origin "HEAD:refs/heads/btb-results/${{BRANCH}}" || true
+git push --force origin "HEAD:refs/heads/btb-results/${{BTB_BRANCH}}" || true
 
-# If completed, squash-rebase onto source branch
 if [ "${{STATUS}}" = "completed" ]; then
-    git fetch origin "${{BRANCH}}"
-    MERGE_BASE=$(git merge-base HEAD "origin/${{BRANCH}}" 2>/dev/null || echo "${{COMMIT_SHA}}")
-    git checkout -b "btb-squash-${{JOB_ID:0:8}}"
+    git fetch origin "${{BTB_BRANCH}}"
+    MERGE_BASE=$(git merge-base HEAD "origin/${{BTB_BRANCH}}" 2>/dev/null || echo "${{BTB_COMMIT_SHA}}")
+    git checkout -b "btb-squash-${{BTB_JOB_ID:0:8}}"
     git reset --soft "${{MERGE_BASE}}"
-    git commit -m "btb: ${{SPEC_NAME}} [job: ${{JOB_ID:0:8}}]" --allow-empty
-    if git rebase "origin/${{BRANCH}}"; then
-        git push origin "HEAD:refs/heads/${{BRANCH}}" || true
+    git commit -m "btb: ${{BTB_SPEC_NAME}} [job: ${{BTB_JOB_ID:0:8}}]" --allow-empty
+    if git rebase "origin/${{BTB_BRANCH}}"; then
+        git push origin "HEAD:refs/heads/${{BTB_BRANCH}}" || true
     fi
 fi
 
-# Preserve logs
 if [ -d .ralph-logs ]; then
-    mkdir -p "${{LOGS_DIR}}/${{JOB_ID}}"
-    cp -a .ralph-logs/. "${{LOGS_DIR}}/${{JOB_ID}}/" || true
+    mkdir -p "${{LOGS_DIR}}/${{BTB_JOB_ID}}"
+    cp -a .ralph-logs/. "${{LOGS_DIR}}/${{BTB_JOB_ID}}/" || true
 fi
 
-# Write completion marker for the coordinator to read
 echo "${{STATUS}}:${{EXIT_CODE}}" > "${{JOB_DIR}}/result.txt"
+echo "[$(date -Iseconds)] Job complete."
+exit ${{EXIT_CODE}}
+BTBEOF
 
-# Cleanup workdir
-cd /
-rm -rf "${{JOB_DIR}}" 2>/dev/null || true
+chmod +x "${{WORKER_SCRIPT}}"
 
-echo "[$(date -Iseconds)] Job complete. Shutting down worker."
+# Write env vars to a file that the worker script sources.
+# Using 'su - ec2-user' gives a proper login shell with correct PATH,
+# XDG dirs, and DBUS — which kiro-cli needs for credential access.
+ENV_FILE="/tmp/btb-env-${{JOB_ID}}.sh"
+cat > "${{ENV_FILE}}" << ENVEOF
+export BTB_JOB_ID='{job_id}'
+export BTB_REPO_URL='{repo_url}'
+export BTB_BRANCH='{branch}'
+export BTB_COMMIT_SHA='{commit_sha}'
+export BTB_SPEC_NAME='{spec_name}'
+export BTB_GITHUB_TOKEN='{github_token}'
+export BTB_PATH='{btb_path}'
+export BTB_RETRY_OF='{retry_of}'
+export BTB_TIMEOUT='{self._job_timeout}'
+ENVEOF
+chmod 600 "${{ENV_FILE}}"
+chown ec2-user:ec2-user "${{ENV_FILE}}"
 
-# Stop this instance (the coordinator will see it transition to "stopped")
-sudo shutdown now
+# Use 'su -' for a full login shell — preserves DBUS, XDG, PATH
+su - ec2-user -c "source ${{ENV_FILE}} && bash ${{WORKER_SCRIPT}}"
+WORKER_EXIT=$?
+rm -f "${{ENV_FILE}}"
+
+rm -f "${{WORKER_SCRIPT}}"
+
+echo "[$(date -Iseconds)] Worker exited with code $WORKER_EXIT. Shutting down."
+nohup bash -c 'sleep 5 && sudo shutdown now' &>/dev/null &
+exit $WORKER_EXIT
 """
 
     async def _stream_remote_log(self, job: Job, local_log_path: str) -> None:
@@ -418,25 +435,27 @@ sudo shutdown now
                 )
                 ssm_status = resp.get("Status", "")
 
-                if ssm_status in ("Success",):
+                if ssm_status == "Success":
                     return "completed", 0
                 elif ssm_status in ("Failed", "Cancelled", "TimedOut"):
                     exit_code = resp.get("ResponseCode", -1)
-                    # Check if btb itself succeeded but shutdown caused SSM to report failure
-                    # (shutdown -now kills the SSM agent mid-report)
+                    if ssm_status == "Failed" and exit_code > 0:
+                        # btb exited non-zero — genuine failure
+                        return "failed", exit_code
                     if ssm_status == "Failed" and exit_code == -1:
-                        # Instance probably shut down — check if it's stopped
+                        # Instance probably shut down mid-report — check state
                         inst_resp = ec2.describe_instances(
                             InstanceIds=[self._worker_instance_id]
                         )
                         inst_state = inst_resp["Reservations"][0]["Instances"][0]["State"]["Name"]
                         if inst_state in ("stopped", "stopping"):
-                            # Worker shut itself down — likely completed successfully
                             logger.info(
-                                "Worker stopped itself for job %s — treating as completed",
+                                "Worker stopped with SSM exit_code=-1 for job %s — treating as completed",
                                 job.id,
                             )
                             return "completed", 0
+                    if ssm_status == "TimedOut":
+                        return "timeout", -1
                     return "failed", exit_code
                 # InProgress, Pending, Delayed — keep waiting
             except ssm.exceptions.InvocationDoesNotExist:

@@ -811,18 +811,33 @@ install_project_deps
 # are expired, every worker will fail immediately and spawn retry loops
 # that consume all system resources. Fail fast with a clear message instead.
 _check_kiro_credentials() {
-    if ! kiro-cli auth status >/dev/null 2>&1; then
-        echo ""
-        echo -e "  \033[91m✗  kiro-cli is not authenticated.\033[0m"
-        echo ""
-        echo "  Workers need valid credentials to run. Please authenticate:"
-        echo ""
-        echo "    kiro-cli login --use-device-flow"
-        echo ""
-        echo "  Then re-run btb."
-        exit 1
+    # Try the 'auth status' subcommand first (available in newer kiro-cli versions).
+    # If the subcommand doesn't exist (exit code 2 + "unrecognized subcommand"),
+    # fall back to checking for the credential database file.
+    local auth_output
+    auth_output=$(kiro-cli auth status 2>&1) && {
+        echo -e "  \033[37m✓\033[0m  kiro-cli authenticated"
+        return 0
+    }
+
+    # Exit code 2 with "unrecognized subcommand" means older kiro-cli — check db file
+    if echo "$auth_output" | awk '/unrecognized subcommand/ { found=1 } END { exit !found }'; then
+        local db_path="${XDG_DATA_HOME:-$HOME/.local/share}/kiro-cli/data.sqlite3"
+        if [ -f "$db_path" ]; then
+            echo -e "  \033[37m✓\033[0m  kiro-cli credentials found"
+            return 0
+        fi
     fi
-    echo -e "  \033[37m✓\033[0m  kiro-cli authenticated"
+
+    echo ""
+    echo -e "  \033[91m✗  kiro-cli is not authenticated.\033[0m"
+    echo ""
+    echo "  Workers need valid credentials to run. Please authenticate:"
+    echo ""
+    echo "    kiro-cli login --use-device-flow"
+    echo ""
+    echo "  Then re-run btb."
+    exit 1
 }
 _check_kiro_credentials
 
