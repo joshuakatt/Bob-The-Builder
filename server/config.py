@@ -30,6 +30,9 @@ class Config:
     job_timeout: int
     log_retention_days: int
     aws_profile: str
+    # EC2 worker mode (optional — if set, jobs run on a remote EC2 instance)
+    worker_instance_id: Optional[str] = None
+    worker_region: Optional[str] = None
 
 
 # Keys that must be present in the config file
@@ -147,4 +150,6 @@ def load_config(path: str) -> Config:
         job_timeout=int_values["JOB_TIMEOUT"],
         log_retention_days=int_values["LOG_RETENTION_DAYS"],
         aws_profile=raw["AWS_PROFILE"],
+        worker_instance_id=raw.get("WORKER_INSTANCE_ID") or None,
+        worker_region=raw.get("WORKER_REGION") or None,
     )

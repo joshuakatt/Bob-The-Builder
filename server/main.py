@@ -20,6 +20,7 @@ from aiohttp import web
 
 from server.config import load_config, ConfigError, Config
 from server.dashboard import setup_routes
+from server.ec2_executor import EC2JobExecutor
 from server.executor import JobExecutor
 from server.models import Job
 from server.pusher import ResultPusher
@@ -388,16 +389,33 @@ def create_app(config: Config) -> web.Application:
         jobs_dir=config.jobs_dir,
         lock_file=lock_file,
     )
-    pusher = ResultPusher(btb_path=config.btb_path)
-    executor = JobExecutor(
-        btb_path=config.btb_path,
-        jobs_dir=config.jobs_dir,
-        logs_dir=config.logs_dir,
-        pusher=pusher,
-        queue=queue,
-        job_timeout=config.job_timeout,
-        github_token=config.github_token,
-    )
+
+    # Choose executor: EC2 worker mode or local mode
+    if config.worker_instance_id and config.worker_region:
+        logger.info(
+            "EC2 worker mode: jobs will run on instance %s in %s",
+            config.worker_instance_id, config.worker_region,
+        )
+        executor = EC2JobExecutor(
+            worker_instance_id=config.worker_instance_id,
+            worker_region=config.worker_region,
+            btb_path=config.btb_path,
+            github_token=config.github_token,
+            queue=queue,
+            job_timeout=config.job_timeout,
+        )
+    else:
+        logger.info("Local mode: jobs will run on this instance")
+        pusher = ResultPusher(btb_path=config.btb_path)
+        executor = JobExecutor(
+            btb_path=config.btb_path,
+            jobs_dir=config.jobs_dir,
+            logs_dir=config.logs_dir,
+            pusher=pusher,
+            queue=queue,
+            job_timeout=config.job_timeout,
+            github_token=config.github_token,
+        )
     streamer_manager = TUIStreamerManager()
 
     # Store shared state on the app for request handlers
