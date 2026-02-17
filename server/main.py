@@ -94,6 +94,54 @@ async def queue_poller(app: web.Application) -> None:
 
         await asyncio.sleep(QUEUE_POLL_INTERVAL)
 
+def recover_orphaned_jobs(queue: JobQueue) -> int:
+    """Mark any jobs left in 'running' state as failed on startup.
+
+    When the coordinator restarts, any job that was mid-flight has lost
+    its monitoring loop.  Rather than attempting to resume or re-run
+    (which could conflict with user stop requests), we mark them failed
+    so the user can inspect and retry via the dashboard.
+
+    Args:
+        queue: The job queue to scan.
+
+    Returns:
+        Number of orphaned jobs recovered.
+    """
+    recovered = 0
+    for filepath in queue._sorted_queue_files():
+        try:
+            job = queue._read_job_file(filepath)
+        except Exception:
+            continue
+        if job.status == "running":
+            logger.warning(
+                "Found orphaned running job %s (spec=%s) — marking as failed",
+                job.id,
+                job.spec_name,
+            )
+            try:
+                queue.complete(
+                    job_id=job.id,
+                    status="failed",
+                    exit_code=-1,
+                    error="Coordinator restarted while job was in flight",
+                    results_branch=f"btb-results/{job.branch}",
+                    push_success=False,
+                    push_error="Coordinator restarted while job was in flight",
+                    cleanup_success=True,
+                )
+                recovered += 1
+            except Exception as exc:
+                logger.error(
+                    "Failed to recover orphaned job %s: %s", job.id, exc,
+                )
+    if recovered:
+        logger.info("Recovered %d orphaned job(s)", recovered)
+    return recovered
+
+
+
 
 def run_log_cleanup(completed_dir: Path, logs_dir: Path, retention_days: int) -> int:
     """Delete completed jobs older than the retention period.
@@ -348,6 +396,9 @@ async def credential_refresh(app: web.Application) -> None:
 
 async def start_background_tasks(app: web.Application) -> None:
     """Start all background tasks when the application starts."""
+    # Recover any jobs orphaned by a previous crash/restart
+    recover_orphaned_jobs(app["job_queue"])
+
     app["queue_poller_task"] = asyncio.create_task(queue_poller(app))
     app["log_cleanup_task"] = asyncio.create_task(log_cleanup(app))
     app["credential_refresh_task"] = asyncio.create_task(credential_refresh(app))

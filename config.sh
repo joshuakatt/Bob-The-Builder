@@ -61,6 +61,9 @@ MAX_REVIEW_RETRIES=${MAX_REVIEW_RETRIES:-4}   # Review→fix cycles per wave
 REVIEWER_MODEL="${REVIEWER_MODEL:-claude-opus-4.6}"  # Model override for reviewer
 REVIEW_FIX_AGENT="${REVIEW_FIX_AGENT:-player}" # Agent used to fix review rejections
 REVIEW_BATCH_SIZE=${REVIEW_BATCH_SIZE:-3}     # Review after this many tasks are synced
+REVIEW_TIMEOUT=${REVIEW_TIMEOUT:-1800}        # Timeout per review/fix kiro-cli call (seconds, 30 min)
+                                              # Prevents vitest/pnpm/cargo from hanging indefinitely
+                                              # in watch mode or waiting for interactive input.
 
 # ─── Completion Tokens ───────────────────────────────────────
 TASK_COMPLETE_PREFIX="TASK_COMPLETE"      # Worker outputs TASK_COMPLETE::<task_id>

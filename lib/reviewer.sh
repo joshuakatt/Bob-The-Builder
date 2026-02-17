@@ -126,7 +126,12 @@ REVIEW CHECKLIST:
 2. Check that implementations are complete (no TODOs, no placeholders, no stub functions)
 3. Verify type safety — interfaces used correctly, no 'any' types unless justified
 4. Check that imports/exports are correct and files reference each other properly
-5. If test files were created, run them
+5. If test files were created, run them — but use NON-INTERACTIVE commands:
+   - vitest: always use 'vitest --run' (NEVER bare 'vitest' which enters watch mode)
+   - jest: use 'jest --forceExit'
+   - pnpm/npm scripts: if the script runs vitest, use 'pnpm run test -- --run' or set CI=true
+   - cargo: 'cargo test' is fine (non-interactive by default)
+   - NEVER run commands that wait for user input or enter watch/interactive mode
 6. Verify tasks.md was updated — completed tasks should be marked [x]
 7. Check for obvious bugs, missing error handling, or security issues
 8. If you need to understand how changed code integrates with the rest of the codebase, explore related files freely — you have full access to the entire repository
@@ -139,9 +144,17 @@ Be thorough but pragmatic. Flag real problems, not style preferences."
 
         echo "$(date +%Y-%m-%dT%H:%M:%S) REVIEW_START wave=${wave_label} attempt=${attempt}" >> "$review_log"
 
+        local review_timeout="${REVIEW_TIMEOUT:-1800}"
         local review_response
-        review_response=$(kiro-cli chat --no-interactive --agent "$reviewer" $reviewer_model_flag --trust-all-tools \
-            "$review_prompt" 2>&1 | tee -a "$review_log") || true
+        review_response=$(timeout "$review_timeout" kiro-cli chat --no-interactive --agent "$reviewer" $reviewer_model_flag --trust-all-tools \
+            "$review_prompt" 2>&1 | tee -a "$review_log") || {
+            local _rc=$?
+            if [ "$_rc" -eq 124 ]; then
+                echo "$(date +%Y-%m-%dT%H:%M:%S) REVIEW_TIMEOUT wave=${wave_label} attempt=${attempt} after ${review_timeout}s" >> "$review_log"
+                tui_event "⚠ review timed out after ${review_timeout}s (attempt ${attempt})"
+                review_response="REJECTED: Review timed out after ${review_timeout} seconds — likely a hung build/test command"
+            fi
+        }
 
         echo "$(date +%Y-%m-%dT%H:%M:%S) REVIEW_END" >> "$review_log"
 
@@ -197,7 +210,12 @@ ${changed_source:-Check all source files}
 INSTRUCTIONS:
 1. Read the rejection details carefully
 2. Read each file mentioned and fix the specific issues
-3. If tests need to be fixed or run, do so
+3. If tests need to be fixed or run, use NON-INTERACTIVE commands:
+   - vitest: always use 'vitest --run' (NEVER bare 'vitest' which enters watch mode)
+   - jest: use 'jest --forceExit'
+   - pnpm/npm scripts: if the script runs vitest, use 'pnpm run test -- --run' or set CI=true
+   - cargo: 'cargo test' is fine (non-interactive by default)
+   - NEVER run commands that wait for user input or enter watch/interactive mode
 4. Verify your fixes resolve ALL the listed issues
 5. Do NOT modify tasks.md unless the reviewer specifically flagged it
 6. Output 'FIXES_APPLIED' when done"
@@ -206,8 +224,15 @@ INSTRUCTIONS:
             echo "$(date +%Y-%m-%dT%H:%M:%S) FIX_START wave=${wave_label} attempt=${attempt}" >> "$fix_log"
 
             local fix_response
-            fix_response=$(kiro-cli chat --no-interactive --agent "$fixer" --trust-all-tools \
-                "$fix_prompt" 2>&1 | tee -a "$fix_log") || true
+            fix_response=$(timeout "$review_timeout" kiro-cli chat --no-interactive --agent "$fixer" --trust-all-tools \
+                "$fix_prompt" 2>&1 | tee -a "$fix_log") || {
+                local _rc=$?
+                if [ "$_rc" -eq 124 ]; then
+                    echo "$(date +%Y-%m-%dT%H:%M:%S) FIX_TIMEOUT wave=${wave_label} attempt=${attempt} after ${review_timeout}s" >> "$fix_log"
+                    tui_event "⚠ fix attempt timed out after ${review_timeout}s"
+                    fix_response="(fix timed out after ${review_timeout} seconds — likely a hung build/test command)"
+                fi
+            }
 
             echo "$(date +%Y-%m-%dT%H:%M:%S) FIX_END" >> "$fix_log"
 

@@ -149,7 +149,12 @@ RULES:
 - Focus ONLY on task ${TASK_ID}. Do NOT work on other tasks.
 - Implement it fully with no placeholders or TODOs.
 - If this task involves writing code, write complete working code.
-- If this task involves tests, write and RUN the tests.
+- If this task involves tests, write and RUN the tests using NON-INTERACTIVE commands:
+  * vitest: always use 'vitest --run' (NEVER bare 'vitest' which enters watch mode)
+  * jest: use 'jest --forceExit'
+  * pnpm/npm scripts: if the script runs vitest, use 'pnpm run test -- --run'
+  * NEVER run commands that wait for user input or enter watch/interactive mode
+- While you can write relevant tests, do NOT write tests that make network calls to external services or bind to ports — This does NOT apply to your own tool usage.
 - After implementation, verify your work compiles/runs correctly.
 - When editing files, always read the file first to understand its full content. If a string replacement fails because of ambiguity, use a more specific match string with additional context lines, or rewrite the section differently.
 - Update ${TASK_FILE} to mark task ${TASK_ID} as complete: change '- [ ] ${TASK_ID}' to '- [x] ${TASK_ID}'

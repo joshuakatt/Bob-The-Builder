@@ -53,7 +53,7 @@ class JobExecutor:
         logs_dir: str,
         pusher: ResultPusher,
         queue: JobQueue,
-        job_timeout: int = 7200,
+        job_timeout: int = 43200,
         github_token: Optional[str] = None,
     ) -> None:
         self._btb_path = btb_path

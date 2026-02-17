@@ -102,6 +102,12 @@ _install_agents
 
 source "${SCRIPT_DIR}/config.sh"
 
+# ─── Non-Interactive Environment ─────────────────────────────
+# Force CI mode so all child tools (vitest, pnpm, cargo, etc.) run
+# non-interactively. Without this, vitest defaults to watch mode,
+# pnpm prompts for input, and builds can hang indefinitely.
+export CI=true
+
 # ─── Validate Spec Files Are Committed ───────────────────────
 # Worktrees are created from git commits. If spec files aren't committed,
 # they won't exist in the worktree and workers will crash.

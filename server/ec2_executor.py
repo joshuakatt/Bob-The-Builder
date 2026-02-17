@@ -254,6 +254,7 @@ set +e
 
 export HOME=/home/ec2-user
 export PATH="/home/ec2-user/.local/bin:/opt/btb/.local/bin:/usr/local/bin:$PATH"
+export TERM=xterm-256color
 
 # Read job params from environment
 JOBS_DIR="/var/btb/jobs"
@@ -282,7 +283,7 @@ fi
 "${{BTB_PATH}}/setup.sh" || true
 
 EXIT_CODE=0
-timeout ${{BTB_TIMEOUT}} "${{BTB_PATH}}/btb.sh" "${{BTB_SPEC_NAME}}" --no-tui || EXIT_CODE=$?
+timeout ${{BTB_TIMEOUT}} script -qfc "${{BTB_PATH}}/btb.sh ${{BTB_SPEC_NAME}}" /dev/null || EXIT_CODE=$?
 
 if [ "${{EXIT_CODE}}" -eq 0 ]; then
     STATUS="completed"
@@ -337,6 +338,7 @@ export BTB_GITHUB_TOKEN='{github_token}'
 export BTB_PATH='{btb_path}'
 export BTB_RETRY_OF='{retry_of}'
 export BTB_TIMEOUT='{self._job_timeout}'
+export CI=true
 ENVEOF
 chmod 600 "${{ENV_FILE}}"
 chown ec2-user:ec2-user "${{ENV_FILE}}"

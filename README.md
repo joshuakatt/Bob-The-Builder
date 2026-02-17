@@ -1,69 +1,79 @@
 # Bob the Builder
 
-Concurrent task orchestrator for [Kiro](https://kiro.dev) specs. Takes a spec with a `tasks.md`, analyzes dependencies, builds a DAG, and executes tasks in parallel using git worktrees for isolation.
+Parallel task runner for [Kiro](https://kiro.dev) specs. Point it at a spec, and it figures out what depends on what, spins up isolated git worktrees, and runs tasks concurrently with AI agents.
 
-Each task gets its own worktree and agent process. A planner assigns models per task, a reviewer audits completed work, and everything syncs back to your main branch automatically.
+![btb in action](Kiro-example.png)
 
 ## Quick Start
 
 ```bash
-# Clone btb anywhere on your machine
 git clone https://github.com/joshuakatt/Bob-The-Builder.git
-
-# cd into your project repo
-cd your-project
-
-# Run setup (validates prereqs, installs agent configs)
-path/to/Bob-The-Builder/setup.sh
-
-# Run btb on a spec
+cd your-project # the project where your spec lives
+path/to/Bob-The-Builder/setup.sh      # one-time: validates prereqs, installs agent configs
 path/to/Bob-The-Builder/btb.sh spec-name
 ```
 
-btb lives in its own directory and operates on whatever repo you're in.
+That's it. btb lives in its own directory and operates on whatever repo you `cd` into.
+
+## Model Configuration
+
+btb lets you control which AI models run your tasks. All settings live in `config.sh` and can be overridden with environment variables.
+
+**Pick your models:**
+
+```sh
+# Models the planner can assign (cheapest → most capable)
+AVAILABLE_MODELS="claude-sonnet-4.5,claude-opus-4.6"
+
+# Fallback when the planner doesn't assign one
+DEFAULT_TASK_MODEL="claude-opus-4.6"
+```
+
+The planner automatically picks a model per task based on complexity — simple tasks get the cheaper model, complex ones get the more capable one.
+
+**Override for specific roles:**
+
+```sh
+STEERING_MODEL="claude-opus-4.6"    # generates project context docs
+REVIEWER_MODEL="claude-opus-4.6"    # runs the review gate
+```
+
+**Quick overrides via env vars** (no need to edit `config.sh`):
+
+```sh
+# Use sonnet for everything
+DEFAULT_TASK_MODEL=claude-sonnet-4.5 REVIEWER_MODEL=claude-sonnet-4.5 ./btb.sh spec-name
+
+# Or export for the session
+export DEFAULT_TASK_MODEL=claude-sonnet-4.5
+./btb.sh spec-name
+```
 
 ## Prerequisites
 
-- **bash** 3.2+ (macOS default works, on Windows use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) or Git Bash)
-- **kiro-cli** — installed and authenticated
-- **git** — any recent version
-- **python3** — for DAG analysis
-- **perl** — optional, for TUI keyboard input (use `--no-tui` without it)
+| Dependency | Notes                                                                                                      |
+| ---------- | ---------------------------------------------------------------------------------------------------------- |
+| bash 3.2+  | macOS default works. Windows: use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) or Git Bash |
+| kiro-cli   | Installed and authenticated                                                                                |
+| git        | Any recent version                                                                                         |
+| python3    | Used for DAG analysis                                                                                      |
+| perl       | Optional — TUI keyboard input. Use `--no-tui` without it                                                   |
 
-Run `setup.sh` in your target repo to validate all prerequisites and install agent configs:
+Run `setup.sh` once in your target repo to validate everything and install agent configs.
 
-```sh
-path/to/Bob-The-Builder/setup.sh
-```
-
-> **Windows note:** btb is a bash tool. On Windows, run it inside WSL or Git Bash — not PowerShell or cmd.
+> **Windows:** btb is a bash tool. Run it inside WSL or Git Bash — not PowerShell or cmd.
 
 ## Usage
 
 ```sh
-# By spec name (looks in .kiro/specs/<name>/)
-btb.sh spec-name
-
-# By explicit path
-btb.sh --spec-dir path/to/spec
-
-# Sequential mode (one task at a time, no DAG)
-btb.sh spec-name --sequential
-
-# Dry run (analyze DAG only, no execution)
-btb.sh spec-name --dry-run
-
-# Skip the review gate
-btb.sh spec-name --no-review
-
-# Plain log output instead of TUI
-btb.sh spec-name --no-tui
-
-# Set max parallel workers
-btb.sh spec-name --max-parallel 6
-
-# Clean up all worktrees, branches, and locks
-btb.sh --cleanup
+btb.sh spec-name                     # run a spec (looks in .kiro/specs/<name>/)
+btb.sh --spec-dir path/to/spec       # explicit path to spec directory
+btb.sh spec-name --sequential        # one task at a time, no DAG
+btb.sh spec-name --dry-run           # analyze DAG only, don't execute
+btb.sh spec-name --no-review         # skip the review gate
+btb.sh spec-name --no-tui            # plain log output instead of TUI
+btb.sh spec-name --max-parallel 6    # set max concurrent workers
+btb.sh --cleanup                     # remove all worktrees, branches, and locks
 ```
 
 ## Spec Structure
