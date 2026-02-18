@@ -2,7 +2,7 @@
 
 Parallel task runner for [Kiro](https://kiro.dev) specs. Point it at a spec, and it figures out what depends on what, spins up isolated git worktrees, and runs tasks concurrently with AI agents.
 
-![btb in action](Kiro-example.png)
+![btb in action](https://raw.githubusercontent.com/joshkatt/Bob/main/Kiro-example.png)
 
 ## Quick Start
 
