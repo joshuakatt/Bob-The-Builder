@@ -675,6 +675,7 @@ trap cleanup_on_exit EXIT INT TERM
 # ═════════════════════════════════════════════════════════════
 
 validate_spec "$SPEC_DIR" || { log_error "Invalid spec: ${SPEC_DIR}"; exit 1; }
+validate_tasks_format "$TASK_FILE" || exit 1
 ensure_git_ready
 mkdir -p "$LOG_DIR"
 

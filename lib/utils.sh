@@ -469,6 +469,157 @@ validate_spec() {
     return $errors
 }
 
+# Validate tasks.md format before DAG analysis.
+# Catches common authoring mistakes that silently break the parser.
+# On errors: prints a diagnostic block with issues + a concise format
+# guide, then returns 1. On success: returns 0 silently.
+validate_tasks_format() {
+    local task_file="$1"
+    [ ! -f "$task_file" ] && return 0  # validate_spec already handles missing file
+
+    python3 - "$task_file" <<'PYEOF'
+import re, sys
+
+task_file = sys.argv[1]
+with open(task_file) as f:
+    lines = f.readlines()
+
+errors = []
+warnings = []
+seen_ids = {}       # id -> line number
+parent_ids = set()  # top-level parent IDs (bare integers)
+
+for lineno, line in enumerate(lines, 1):
+    stripped = line.rstrip('\n')
+
+    # ── Detect lines that look like tasks but have broken checkbox format ──
+    # Catches: "- 1.1 Do something", "- () 1.1", "* [ ] 1.1", "- [] 1.1"
+    if re.match(r'^[\s]*[-*]\s+\d+[\.\s]', stripped) and not re.search(r'\[.\]', stripped):
+        errors.append(f"  line {lineno}: missing checkbox — '{stripped.strip()}'")
+        errors.append(f"           fix: add '[ ] ' after the dash → '- [ ] ...'")
+        continue
+
+    if re.match(r'^[\s]*[-*]\s+\(\)', stripped) or re.match(r'^[\s]*[-*]\s+\[\]', stripped):
+        errors.append(f"  line {lineno}: malformed checkbox — '{stripped.strip()}'")
+        errors.append(f"           fix: use '[ ]' (space between brackets) with a dash '- [ ] ...'")
+        continue
+
+    if re.match(r'^\s*\*\s+\[.\]', stripped):
+        errors.append(f"  line {lineno}: wrong list marker — '{stripped.strip()}'")
+        errors.append(f"           fix: use '- [ ]' not '* [ ]'")
+        continue
+
+    # ── Only process valid checkbox lines from here ──
+    m_checkbox = re.match(r'^[\s]*-\s+\[.\]\s+(.*)', stripped)
+    if not m_checkbox:
+        continue  # non-task line (headings, context, blank) — fine
+
+    after_checkbox = m_checkbox.group(1)
+
+    # ── Try to extract a task ID ──
+    # Subtask: "1.1 description" or "1.10 description"
+    m_sub = re.match(r'^(\d+)\.(\d+)\s', after_checkbox)
+    # Parent: "1. description" (dot-space)
+    m_par = re.match(r'^(\d+)\.\s', after_checkbox)
+    # Broken subtask: "1. 1 description" (dot-space-digit — common typo)
+    m_broken = re.match(r'^(\d+)\.\s+(\d+)\s', after_checkbox)
+    # Non-numeric ID
+    m_alpha = re.match(r'^([A-Za-z])', after_checkbox)
+
+    if m_broken:
+        pid = m_broken.group(1)
+        sid = m_broken.group(2)
+        errors.append(f"  line {lineno}: dot-space in subtask ID — '- [ ] {pid}. {sid} ...'")
+        errors.append(f"           fix: remove the space → '- [ ] {pid}.{sid} ...'")
+        errors.append(f"           note: '{pid}. ' is parsed as parent task {pid}, not subtask {pid}.{sid}")
+        continue
+
+    if m_sub:
+        full_id = f"{m_sub.group(1)}.{m_sub.group(2)}"
+        parent_id = m_sub.group(1)
+        if full_id in seen_ids:
+            errors.append(f"  line {lineno}: duplicate ID '{full_id}' (first seen line {seen_ids[full_id]})")
+        else:
+            seen_ids[full_id] = lineno
+        # Track that this parent has children
+        parent_ids.add(parent_id)
+    elif m_par:
+        tid = m_par.group(1)
+        if tid in seen_ids:
+            errors.append(f"  line {lineno}: duplicate ID '{tid}' (first seen line {seen_ids[tid]})")
+        else:
+            seen_ids[tid] = lineno
+    elif m_alpha:
+        errors.append(f"  line {lineno}: non-numeric ID — '{stripped.strip()}'")
+        errors.append(f"           fix: use numeric IDs like '1.1', '2.3', not letters")
+    else:
+        # Checkbox line with no recognizable ID
+        errors.append(f"  line {lineno}: checkbox with no task ID — '{stripped.strip()}'")
+        errors.append(f"           fix: add a numeric ID after the checkbox → '- [ ] 1.1 ...'")
+
+# ── Check for orphan subtasks (parent ID never appears as a top-level task) ──
+top_level_ids = set()
+for tid in seen_ids:
+    if '.' not in tid:
+        top_level_ids.add(tid)
+
+for tid in seen_ids:
+    if '.' in tid:
+        parent = tid.split('.')[0]
+        if parent not in top_level_ids:
+            warnings.append(f"  subtask {tid} references parent {parent}, but no '- [ ] {parent}. ...' line exists")
+
+# ── Check that at least one leaf task exists ──
+has_subtasks = len([t for t in seen_ids if '.' in t]) > 0
+has_childless = len([t for t in seen_ids if '.' not in t and t not in parent_ids]) > 0
+if not has_subtasks and not has_childless:
+    errors.append(f"  no executable tasks found — file has no subtasks and no standalone parent tasks")
+
+# ── Output ──
+if not errors and not warnings:
+    sys.exit(0)
+
+print()
+print("  \033[91m✗  tasks.md format issues\033[0m")
+print()
+
+if errors:
+    for e in errors:
+        print(e)
+    print()
+
+if warnings:
+    print("  \033[93mwarnings:\033[0m")
+    for w in warnings:
+        print(w)
+    print()
+
+# ── Concise format guide ──
+print("  \033[1m\033[97mtasks.md format:\033[0m")
+print()
+print("    parent task:    - [ ] N. Description        (N = integer, dot-space)")
+print("    subtask:        - [ ] N.M Description       (N.M = dotted, no space after dot)")
+print("    completed:      - [x] N.M Description       (x marks done)")
+print()
+print("  \033[2mrules:\033[0m")
+print("    · every task line needs a checkbox: - [ ] or - [x]")
+print("    · IDs must be numeric (1, 1.1, 2.3) — no letters")
+print("    · IDs must be unique across the file")
+print("    · subtask dot is part of the ID: 1.1 not 1. 1")
+print("    · parent tasks with subtasks are not executed (subtasks are)")
+print("    · parent tasks without subtasks run as leaf tasks")
+print()
+print("  \033[2mexample:\033[0m")
+print("    - [ ] 1. Setup infrastructure")
+print("      - [ ] 1.1 Create database schema")
+print("      - [ ] 1.2 Add seed data")
+print("    - [ ] 2. Verify setup works          ← runs as leaf (no children)")
+print()
+
+sys.exit(1)
+PYEOF
+}
+
 validate_dag_json() {
     local json="$1"
     echo "$json" | python3 -c "
