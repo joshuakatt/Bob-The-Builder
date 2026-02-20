@@ -1,14 +1,9 @@
 {
   "name": "health-checker",
   "description": "Evaluates whether a long-running worker is making meaningful progress",
-  "model": "claude-sonnet-4.5",
+  "model": "claude-sonnet-4.6",
   "tools": ["*"],
-  "allowedTools": [
-    "fs_read",
-    "fs_*",
-    "knowledge",
-    "thinking"
-  ],
+  "allowedTools": ["fs_read", "fs_*", "knowledge", "thinking"],
   "toolsSettings": {
     "fs_read": {
       "allowedPaths": ["**"]

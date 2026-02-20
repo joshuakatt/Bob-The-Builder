@@ -1,7 +1,7 @@
 {
   "name": "verifier",
   "description": "Post-rebase build and test verifier",
-  "model": "claude-sonnet-4",
+  "model": "claude-sonnet-4.6",
   "tools": ["*"],
   "allowedTools": [
     "fs_read",

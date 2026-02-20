@@ -1,7 +1,7 @@
 {
   "name": "resolver",
   "description": "Merge conflict resolver with full codebase context",
-  "model": "claude-sonnet-4",
+  "model": "claude-sonnet-4.6",
   "tools": ["*"],
   "allowedTools": [
     "fs_read",

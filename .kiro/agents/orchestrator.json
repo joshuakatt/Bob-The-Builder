@@ -1,7 +1,7 @@
 {
   "name": "orchestrator",
   "description": "Coordinates implementation and review cycles",
-  "model": "claude-sonnet-4",
+  "model": "claude-sonnet-4.6",
   "tools": ["*"],
   "allowedTools": [
     "fs_read",

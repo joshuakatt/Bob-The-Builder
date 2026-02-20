@@ -19,17 +19,22 @@ That's it. btb lives in its own directory and operates on whatever repo you `cd`
 
 btb lets you control which AI models run your tasks. All settings live in `config.sh` and can be overridden with environment variables.
 
-**Pick your models:**
+**Credit modes:**
 
 ```sh
-# Models the planner can assign (cheapest → most capable)
-AVAILABLE_MODELS="claude-sonnet-4.5,claude-opus-4.6"
+# Optimal (default) — sonnet + opus, defaults to opus
+./btb.sh spec-name --optimal
 
-# Fallback when the planner doesn't assign one
-DEFAULT_TASK_MODEL="claude-opus-4.6"
+# Low credits — haiku + sonnet + opus, defaults to sonnet
+./btb.sh spec-name --low
 ```
 
-The planner automatically picks a model per task based on complexity — simple tasks get the cheaper model, complex ones get the more capable one.
+The planner always runs on Opus 4.6 regardless of mode. The mode only affects which models the planner can assign to tasks and the default fallback.
+
+| Mode        | Available Models                | Default Task Model |
+| ----------- | ------------------------------- | ------------------ |
+| `--optimal` | sonnet 4.6, opus 4.6            | opus 4.6           |
+| `--low`     | haiku 4.5, sonnet 4.6, opus 4.6 | sonnet 4.6         |
 
 **Override for specific roles:**
 
@@ -42,10 +47,10 @@ REVIEWER_MODEL="claude-opus-4.6"    # runs the review gate
 
 ```sh
 # Use sonnet for everything
-DEFAULT_TASK_MODEL=claude-sonnet-4.5 REVIEWER_MODEL=claude-sonnet-4.5 ./btb.sh spec-name
+DEFAULT_TASK_MODEL=claude-sonnet-4.6 REVIEWER_MODEL=claude-sonnet-4.6 ./btb.sh spec-name
 
 # Or export for the session
-export DEFAULT_TASK_MODEL=claude-sonnet-4.5
+export DEFAULT_TASK_MODEL=claude-sonnet-4.6
 ./btb.sh spec-name
 ```
 
@@ -124,14 +129,15 @@ Effective worker slots = `MAX_PARALLEL` - `REVIEW_RESERVED_SLOTS`. With defaults
 
 ### Models
 
-| Setting              | Default                             | Description                                  |
-| -------------------- | ----------------------------------- | -------------------------------------------- |
-| `AVAILABLE_MODELS`   | `claude-sonnet-4.5,claude-opus-4.6` | Models the planner can assign to tasks       |
-| `DEFAULT_TASK_MODEL` | `claude-opus-4.6`                   | Fallback when planner doesn't assign a model |
-| `STEERING_MODEL`     | `claude-opus-4.6`                   | Model used to generate steering docs         |
-| `REVIEWER_MODEL`     | `claude-opus-4.6`                   | Model used for the review gate               |
+| Setting              | Default           | Description                                                         |
+| -------------------- | ----------------- | ------------------------------------------------------------------- |
+| `BTB_MODE`           | `optimal`         | Credit mode: `optimal` or `low` (set via `--low`/`--optimal` flags) |
+| `AVAILABLE_MODELS`   | mode-dependent    | Models the planner can assign to tasks                              |
+| `DEFAULT_TASK_MODEL` | mode-dependent    | Fallback when planner doesn't assign a model                        |
+| `STEERING_MODEL`     | `claude-opus-4.6` | Model used to generate steering docs                                |
+| `REVIEWER_MODEL`     | `claude-opus-4.6` | Model used for the review gate                                      |
 
-The planner picks a model per task based on complexity. Simple tasks get cheaper models, complex ones get more capable models.
+The planner picks a model per task based on complexity. In `--optimal` mode, it chooses between sonnet and opus. In `--low` mode, haiku is also available for trivial tasks.
 
 ### Review Gate
 

@@ -30,7 +30,7 @@ TASK_FILE="${2:?Missing task_file argument}"
 SPEC_DIR="${3:?Missing spec_dir argument}"
 MAX_ITERATIONS="${4:-20}"
 LOG_FILE="${5:-/dev/null}"
-TASK_MODEL="${6:-}"  # Model override (e.g. claude-haiku-4.5, claude-sonnet-4)
+TASK_MODEL="${6:-}"  # Model override (e.g. claude-haiku-4.5, claude-sonnet-4.6)
 
 # Source utils from the original repo (not the worktree)
 # The worktree has a copy of everything, so source locally

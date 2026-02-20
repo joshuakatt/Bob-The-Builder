@@ -1,7 +1,7 @@
 {
   "name": "player",
   "description": "High-speed implementation agent with self-review",
-  "model": "claude-sonnet-4.5",
+  "model": "claude-sonnet-4.6",
   "tools": ["*"],
   "allowedTools": [
     "fs_read",

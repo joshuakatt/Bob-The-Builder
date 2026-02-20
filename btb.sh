@@ -40,6 +40,7 @@ DRY_RUN=false
 FORCE_SEQUENTIAL=false
 USE_TUI=true
 SKIP_REVIEW=false
+BTB_MODE="${BTB_MODE:-optimal}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -50,6 +51,8 @@ while [[ $# -gt 0 ]]; do
         --dry-run)       DRY_RUN=true; shift ;;
         --no-tui)        USE_TUI=false; shift ;;
         --no-review)     SKIP_REVIEW=true; shift ;;
+        --low)           BTB_MODE="low"; shift ;;
+        --optimal)       BTB_MODE="optimal"; shift ;;
         --cleanup)
             source "${SCRIPT_DIR}/lib/utils.sh"
             cleanup_all_ralph
@@ -66,6 +69,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --dry-run            Analyze dependencies only"
             echo "  --no-tui             Disable full-screen TUI (plain log output)"
             echo "  --no-review          Skip post-wave quality review"
+            echo "  --low                Low credits mode (haiku+sonnet+opus, default sonnet)"
+            echo "  --optimal            Optimal mode (sonnet+opus, default opus) [default]"
             echo "  --cleanup            Remove all worktrees/branches/locks"
             exit 0 ;;
         -*)  echo "Unknown option: $1" >&2; exit 1 ;;
@@ -100,6 +105,7 @@ _install_agents() {
 }
 _install_agents
 
+export BTB_MODE
 source "${SCRIPT_DIR}/config.sh"
 
 # ─── Non-Interactive Environment ─────────────────────────────

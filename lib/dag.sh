@@ -33,7 +33,18 @@ analyze_dependencies() {
         context_files="${context_files}Also read ${requirements_file} for requirements context. "
     fi
 
-    local models_list="${AVAILABLE_MODELS:-claude-sonnet-4.5,claude-opus-4.6}"
+    local models_list="${AVAILABLE_MODELS:-claude-sonnet-4.6,claude-opus-4.6}"
+
+    # Build model assignment instructions based on available models
+    local model_hints=""
+    if echo ",$models_list," | awk 'index($0, ",claude-haiku-4.5,") { found=1 } END { exit !found }' 2>/dev/null; then
+        model_hints="- claude-haiku-4.5: trivial/boilerplate tasks (config, renaming, simple wiring)
+- claude-sonnet-4.6: standard implementation tasks
+- claude-opus-4.6: complex/architectural tasks"
+    else
+        model_hints="- claude-sonnet-4.6: simple/standard tasks
+- claude-opus-4.6: complex/architectural tasks"
+    fi
 
     local steering_hint=""
     if [ -d ".kiro/steering" ] && [ -n "$(ls -A .kiro/steering 2>/dev/null)" ]; then
@@ -58,12 +69,11 @@ Rules:
 4. Setup tasks have no dependencies; tests depend on their implementation
 
 Model assignment — pick ONLY from: ${models_list}
-- claude-sonnet-4.5: simple/standard tasks
-- claude-opus-4.6: complex/architectural tasks
+${model_hints}
 WARNING: 'claude-opus-4.5' does NOT exist.
 
 Output ONLY valid JSON, no markdown fences, no explanation:
-{\"waves\":[{\"id\":0,\"tasks\":[{\"id\":\"1.1\",\"description\":\"...\",\"parent\":\"1\",\"dependencies\":[],\"model\":\"claude-sonnet-4.5\"}]}]}" 2>/dev/null) || true
+{\"waves\":[{\"id\":0,\"tasks\":[{\"id\":\"1.1\",\"description\":\"...\",\"parent\":\"1\",\"dependencies\":[],\"model\":\"claude-sonnet-4.6\"}]}]}" 2>/dev/null) || true
 
     local json
     json=$(extract_json "$raw_response" 2>/dev/null) || true
@@ -129,8 +139,9 @@ ${missing_detail}
 Already in DAG (do NOT include): ${existing_ids_str}
 
 Output ONLY valid JSON, no markdown fences:
-{\"waves\":[{\"id\":<wave>,\"tasks\":[{\"id\":\"<id>\",\"description\":\"...\",\"parent\":\"<parent>\",\"dependencies\":[],\"model\":\"claude-sonnet-4.5\"}]}]}
+{\"waves\":[{\"id\":<wave>,\"tasks\":[{\"id\":\"<id>\",\"description\":\"...\",\"parent\":\"<parent>\",\"dependencies\":[],\"model\":\"claude-sonnet-4.6\"}]}]}
 
+${model_hints}
 Models: pick from ${models_list} only. 'claude-opus-4.5' does NOT exist." 2>/dev/null) || true
 
         local patch_json
@@ -303,7 +314,7 @@ _append_missing_as_sequential() {
     local dag_json="$1"
     local task_file="$2"
     local missing_ids="$3"
-    local default_model="${DEFAULT_TASK_MODEL:-claude-sonnet-4.5}"
+    local default_model="${DEFAULT_TASK_MODEL:-claude-sonnet-4.6}"
 
     local dag_file
     dag_file=$(mktemp)
@@ -461,7 +472,7 @@ print(json.dumps(best))
 
 build_fallback_dag() {
     local task_file="$1"
-    local default_model="${DEFAULT_TASK_MODEL:-claude-sonnet-4.5}"
+    local default_model="${DEFAULT_TASK_MODEL:-claude-sonnet-4.6}"
     log_warn "Using fallback DAG (inferred dependencies from task numbering)" >&2
 
     python3 - "$task_file" "$default_model" <<'PYEOF'
@@ -608,7 +619,7 @@ print('{}')
 get_task_model() {
     local dag_json="$1"
     local task_id="$2"
-    local default="${DEFAULT_TASK_MODEL:-claude-sonnet-4.5}"
+    local default="${DEFAULT_TASK_MODEL:-claude-sonnet-4.6}"
     local model
     model=$(echo "$dag_json" | python3 -c "
 import sys, json
@@ -622,7 +633,7 @@ for wave in data['waves']:
 print('${default}')
 " 2>/dev/null) || echo "$default"
     
-    local allowed="${AVAILABLE_MODELS:-claude-sonnet-4.5,claude-opus-4.6}"
+    local allowed="${AVAILABLE_MODELS:-claude-sonnet-4.6,claude-opus-4.6}"
     if echo ",$allowed," | awk -v m="$model" 'index($0, "," m ",") { found=1 } END { exit !found }' 2>/dev/null; then
         echo "$model"
     else

@@ -513,7 +513,8 @@ tui_state_color() {
 # Short model label for TUI display (e.g. "haiku" "sonnet" "opus")
 tui_model_badge() {
     case "$1" in
-        claude-sonnet-4.5)  echo "${_BOLD}${_CYAN}sonnet${_RST}" ;;
+        claude-haiku-4.5)   echo "${_BOLD}${_GREEN}haiku${_RST}" ;;
+        claude-sonnet-4.6)  echo "${_BOLD}${_CYAN}sonnet${_RST}" ;;
         claude-opus-4.6)    echo "${_BOLD}${_YELLOW}opus${_RST}" ;;
         *)                  echo "${_DIM}${_GRAY}${1}${_RST}" ;;
     esac
@@ -653,7 +654,8 @@ tui_render_task_map() {
     _tm_model_color() {
         case "$1" in
             claude-opus-4.6)    echo "${_YELLOW}" ;;
-            claude-sonnet-4.5)  echo "${_CYAN}" ;;
+            claude-sonnet-4.6)  echo "${_CYAN}" ;;
+            claude-haiku-4.5)   echo "${_GREEN}" ;;
             *)                  echo "${_CYAN}" ;;
         esac
     }
@@ -1117,7 +1119,7 @@ for wave in waves:
         task_descs.append(desc)
         task_waves.append(str(wid))
         task_deps.append(','.join(task.get('dependencies', [])))
-        task_models.append(task.get('model', 'claude-sonnet-4.5'))
+        task_models.append(task.get('model', 'claude-sonnet-4.6'))
     wave_tasks.append(','.join(tids))
 print('TUI_WAVE_IDS=(' + ' '.join(f'\"{x}\"' for x in wave_ids) + ')')
 print('TUI_WAVE_TASKS=(' + ' '.join(f'\"{x}\"' for x in wave_tasks) + ')')

@@ -47,11 +47,26 @@ STEERING_AGENT="${STEERING_AGENT:-planner}"       # Agent used to generate steer
 STEERING_MODEL="${STEERING_MODEL:-claude-opus-4.6}" # Model for steering generation
 
 # ─── Model Settings ──────────────────────────────────────────
-# Available models for the planner to choose from (kiro-cli --model values).
-# Valid models: claude-sonnet-4.5, claude-opus-4.6
-# Ordered cheapest → most expensive. The planner assigns one per task.
-AVAILABLE_MODELS="claude-sonnet-4.5,claude-opus-4.6"
-DEFAULT_TASK_MODEL="claude-opus-4.6"  # Fallback when planner doesn't assign a model
+# Credit mode presets — set by --low or --optimal flags in btb.sh.
+# BTB_MODE defaults to "optimal" if not set.
+BTB_MODE="${BTB_MODE:-optimal}"
+
+# Optimal (default): sonnet + opus, default opus
+OPTIMAL_AVAILABLE_MODELS="claude-sonnet-4.6,claude-opus-4.6"
+OPTIMAL_DEFAULT_MODEL="claude-opus-4.6"
+
+# Low: haiku + sonnet + opus, default sonnet
+LOW_AVAILABLE_MODELS="claude-haiku-4.5,claude-sonnet-4.6,claude-opus-4.6"
+LOW_DEFAULT_MODEL="claude-sonnet-4.6"
+
+# Resolve based on mode — explicit env var overrides always win
+if [ "$BTB_MODE" = "low" ]; then
+    AVAILABLE_MODELS="${AVAILABLE_MODELS:-$LOW_AVAILABLE_MODELS}"
+    DEFAULT_TASK_MODEL="${DEFAULT_TASK_MODEL:-$LOW_DEFAULT_MODEL}"
+else
+    AVAILABLE_MODELS="${AVAILABLE_MODELS:-$OPTIMAL_AVAILABLE_MODELS}"
+    DEFAULT_TASK_MODEL="${DEFAULT_TASK_MODEL:-$OPTIMAL_DEFAULT_MODEL}"
+fi
 
 # ─── Review Settings ─────────────────────────────────────────
 # Post-wave quality gate. Reviewer audits each wave's work against the spec.
@@ -86,7 +101,7 @@ JOB_TIMEOUT=${JOB_TIMEOUT:-43200}         # Hard wall-clock timeout per task (se
 # ─── LLM Health Check ───────────────────────────────────────
 HEALTH_CHECK_ENABLED=${HEALTH_CHECK_ENABLED:-true}
 HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-1800}    # Seconds between health checks (30 min)
-HEALTH_CHECK_MODEL=${HEALTH_CHECK_MODEL:-claude-sonnet-4.5}
+HEALTH_CHECK_MODEL=${HEALTH_CHECK_MODEL:-claude-sonnet-4.6}
 HEALTH_CHECK_LOG_LINES=${HEALTH_CHECK_LOG_LINES:-50}    # Log lines in context
 
 # ─── Shared Build Cache ─────────────────────────────────────
